@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Saved Data - Scrappy</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            padding-top: 20px;
+            background-color: #f8f9fa;
+        }
+        .header {
+            margin-bottom: 30px;
+        }
+        .data-container {
+            background-color: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .data-card {
+            margin-bottom: 15px;
+            border-radius: 8px;
+            transition: transform 0.2s ease;
+        }
+        .data-card:hover {
+            transform: translateY(-3px);
+        }
+        .filter-container {
+            margin-bottom: 20px;
+            padding: 15px;
+            background-color: white;
+            border-radius: 10px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        }
+        .empty-state {
+            text-align: center;
+            padding: 40px 0;
+            color: #6c757d;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header text-center">
+            <h1>Saved Data</h1>
+            <p class="lead">View and manage your scraped content</p>
+            <a href="/" class="btn btn-outline-secondary">Back to Home</a>
+        </div>
+
+        <div class="filter-container">
+            <div class="row">
+                <div class="col-md-6">
+                    <h5>Filter by Type</h5>
+                    <div class="btn-group" role="group">
+                        <a href="/data" class="btn btn-outline-primary active">All</a>
+                        <a href="/data?type=github" class="btn btn-outline-primary">GitHub</a>
+                        <a href="/data?type=website" class="btn btn-outline-primary">Website</a>
+                        <a href="/data?type=youtube" class="btn btn-outline-primary">YouTube</a>
+                    </div>
+                </div>
+                <div class="col-md-6 text-md-end mt-3 mt-md-0">
+                    <a href="/" class="btn btn-primary">Scrape New Content</a>
+                </div>
+            </div>
+        </div>
+
+        <div class="data-container">
+            {% if results %}
+                <div class="row">
+                    {% for result in results %}
+                        <div class="col-md-6">
+                            <div class="card data-card">
+                                <div class="card-header 
+                                    {% if result.scraper_type == 'github' %}bg-primary text-white
+                                    {% elif result.scraper_type == 'website' %}bg-success text-white
+                                    {% elif result.scraper_type == 'youtube' %}bg-danger text-white
+                                    {% endif %}">
+                                    {{ result.scraper_type|capitalize }} - {{ result.identifier }}
+                                </div>
+                                <div class="card-body">
+                                    <p class="card-text">
+                                        <small class="text-muted">Saved: {{ result.saved_at }}</small>
+                                    </p>
+                                    
+                                    {% if result.summary %}
+                                        <h6>Summary:</h6>
+                                        <ul class="mb-3">
+                                            {% for key, value in result.summary.items() %}
+                                                <li>{{ key|capitalize }}: {{ value }}</li>
+                                            {% endfor %}
+                                        </ul>
+                                    {% endif %}
+                                    
+                                    <div class="d-flex justify-content-between">
+                                        <a href="/data/{{ result.scraper_type }}/{{ result.identifier }}" class="btn btn-sm btn-outline-secondary">View Details</a>
+                                        <form action="/data/{{ result.scraper_type }}/{{ result.identifier }}/delete" method="post" onsubmit="return confirm('Are you sure you want to delete this data?');">
+                                            <button type="submit" class="btn btn-sm btn-outline-danger">Delete</button>
+                                        </form>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    {% endfor %}
+                </div>
+            {% else %}
+                <div class="empty-state">
+                    <h4>No saved data found</h4>
+                    <p>Start by scraping a GitHub repository, website, or YouTube channel.</p>
+                    <a href="/" class="btn btn-primary mt-2">Scrape New Content</a>
+                </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Highlight active filter button
+        document.addEventListener('DOMContentLoaded', function() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const type = urlParams.get('type');
+            
+            const buttons = document.querySelectorAll('.filter-container .btn-group .btn');
+            buttons.forEach(button => {
+                button.classList.remove('active');
+                
+                if (!type && button.getAttribute('href') === '/data') {
+                    button.classList.add('active');
+                } else if (type && button.getAttribute('href') === `/data?type=${type}`) {
+                    button.classList.add('active');
+                }
+            });
+        });
+    </script>
+</body>
+</html>

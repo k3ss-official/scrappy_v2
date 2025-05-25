@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>View Data - Scrappy</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            padding-top: 20px;
+            background-color: #f8f9fa;
+        }
+        .header {
+            margin-bottom: 30px;
+        }
+        .data-container {
+            background-color: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        pre {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+            max-height: 500px;
+            overflow-y: auto;
+        }
+        .actions {
+            margin-top: 20px;
+            display: flex;
+            gap: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header text-center">
+            <h1>Data Details</h1>
+            <p class="lead">{{ scraper_type|capitalize }} - {{ identifier }}</p>
+            <div>
+                <a href="/data" class="btn btn-outline-secondary">Back to Data List</a>
+                <a href="/" class="btn btn-outline-secondary">Back to Home</a>
+            </div>
+        </div>
+
+        <div class="data-container">
+            <h4>Raw Data</h4>
+            <pre><code>{{ data }}</code></pre>
+
+            <div class="actions">
+                <form action="/data/{{ scraper_type }}/{{ identifier }}/delete" method="post" onsubmit="return confirm('Are you sure you want to delete this data?');">
+                    <button type="submit" class="btn btn-danger">Delete Data</button>
+                </form>
+                
+                <div class="dropdown">
+                    <button class="btn btn-primary dropdown-toggle" type="button" id="exportDropdown" data-bs-toggle="dropdown" aria-expanded="false">
+                        Export Data
+                    </button>
+                    <ul class="dropdown-menu" aria-labelledby="exportDropdown">
+                        <li><a class="dropdown-item" href="#" onclick="exportData('json')">Export as JSON</a></li>
+                        <li><a class="dropdown-item" href="#" onclick="exportData('csv')">Export as CSV</a></li>
+                        <li><a class="dropdown-item" href="#" onclick="exportData('txt')">Export as TXT</a></li>
+                        <li><a class="dropdown-item" href="#" onclick="exportData('yaml')">Export as YAML</a></li>
+                        <li><a class="dropdown-item" href="#" onclick="exportData('xml')">Export as XML</a></li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        function exportData(format) {
+            // In a real implementation, this would call an API endpoint to convert and download the data
+            alert(`Exporting data as ${format.toUpperCase()}... This feature would be implemented in the full version.`);
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Website Scraper - Scrappy</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            padding-top: 20px;
+            background-color: #f8f9fa;
+        }
+        .header {
+            margin-bottom: 30px;
+        }
+        .form-container {
+            background-color: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .format-options {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .format-option {
+            display: flex;
+            align-items: center;
+            padding: 8px 15px;
+            background-color: #f1f1f1;
+            border-radius: 20px;
+            cursor: pointer;
+        }
+        .format-option:hover {
+            background-color: #e9ecef;
+        }
+        .format-option input {
+            margin-right: 5px;
+        }
+        .result-container {
+            margin-top: 20px;
+            display: none;
+        }
+        .loading {
+            display: none;
+            text-align: center;
+            margin: 20px 0;
+        }
+        .spinner-border {
+            width: 3rem;
+            height: 3rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header text-center">
+            <h1>Website Scraper</h1>
+            <p class="lead">Extract content from websites with customizable depth and targeting</p>
+            <a href="/" class="btn btn-outline-secondary">Back to Home</a>
+        </div>
+
+        <div class="row justify-content-center">
+            <div class="col-md-8">
+                <div class="form-container">
+                    <form id="website-form">
+                        <div class="mb-3">
+                            <label for="website-url" class="form-label">Website URL</label>
+                            <input type="url" class="form-control" id="website-url" name="website_url" 
+                                   placeholder="https://example.com" required>
+                            <div class="form-text">Enter the full URL of the website you want to scrape.</div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="depth" class="form-label">Crawling Depth</label>
+                            <select class="form-select" id="depth" name="depth">
+                                <option value="1" selected>1 - Just the provided URL</option>
+                                <option value="2">2 - URL and linked pages (one level)</option>
+                                <option value="3">3 - URL and linked pages (two levels)</option>
+                            </select>
+                            <div class="form-text">Higher depth values will scrape more pages but take longer.</div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">Output Formats</label>
+                            <div class="format-options">
+                                <label class="format-option">
+                                    <input type="checkbox" name="output_formats" value="json" checked> JSON
+                                </label>
+                                <label class="format-option">
+                                    <input type="checkbox" name="output_formats" value="csv"> CSV
+                                </label>
+                                <label class="format-option">
+                                    <input type="checkbox" name="output_formats" value="txt"> TXT
+                                </label>
+                                <label class="format-option">
+                                    <input type="checkbox" name="output_formats" value="yaml"> YAML
+                                </label>
+                                <label class="format-option">
+                                    <input type="checkbox" name="output_formats" value="xml"> XML
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="d-grid">
+                            <button type="submit" class="btn btn-success">Scrape Website</button>
+                        </div>
+                    </form>
+
+                    <div class="loading">
+                        <div class="spinner-border text-success" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                        <p class="mt-2">Scraping website... This may take a few minutes depending on the depth.</p>
+                    </div>
+
+                    <div class="result-container alert alert-success">
+                        <h4 class="alert-heading">Scraping Completed!</h4>
+                        <p id="result-message"></p>
+                        <hr>
+                        <div id="output-files">
+                            <p class="mb-1">Output Files:</p>
+                            <ul id="file-list"></ul>
+                        </div>
+                        <div class="mt-3">
+                            <a href="/data" class="btn btn-outline-success">View All Saved Data</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('website-form').addEventListener('submit', function(e) {
+            e.preventDefault();
+            
+            // Show loading spinner
+            document.querySelector('.loading').style.display = 'block';
+            
+            // Hide result container if visible
+            document.querySelector('.result-container').style.display = 'none';
+            
+            // Get form data
+            const formData = new FormData(this);
+            
+            // Submit form
+            fetch('/scrape/website', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                // Hide loading spinner
+                document.querySelector('.loading').style.display = 'none';
+                
+                if (data.error) {
+                    // Show error
+                    alert('Error: ' + data.error);
+                } else {
+                    // Show result
+                    document.getElementById('result-message').textContent = data.message;
+                    
+                    // Clear file list
+                    const fileList = document.getElementById('file-list');
+                    fileList.innerHTML = '';
+                    
+                    // Add output files to list
+                    for (const [format, path] of Object.entries(data.result.output_files)) {
+                        const li = document.createElement('li');
+                        const a = document.createElement('a');
+                        a.href = '/output/' + path.split('/').pop();
+                        a.textContent = format.toUpperCase() + ' Format';
+                        a.target = '_blank';
+                        li.appendChild(a);
+                        fileList.appendChild(li);
+                    }
+                    
+                    // Show result container
+                    document.querySelector('.result-container').style.display = 'block';
+                }
+            })
+            .catch(error => {
+                // Hide loading spinner
+                document.querySelector('.loading').style.display = 'none';
+                
+                // Show error
+                alert('Error: ' + error.message);
+            });
+        });
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
