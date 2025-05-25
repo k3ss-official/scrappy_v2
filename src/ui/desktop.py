@@ -1,295 +1,174 @@
 """
 Desktop GUI Application for Scrappy
 
-This module provides a PyQt5-based desktop GUI for the Scrappy application,
-allowing users to interact with the scraping functionality through a modern interface.
+This module implements the PyQt5-based desktop GUI for Scrappy,
+following the 'What-Where-How' workflow pattern.
 """
 
 import os
 import sys
 import json
 import logging
-from typing import Dict, List, Any, Optional
 from datetime import datetime
-import threading
-import webbrowser
+from typing import Dict, List, Any, Optional
 
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-    QLabel, QLineEdit, QComboBox, QPushButton, QCheckBox, QTabWidget,
-    QScrollArea, QFrame, QSplitter, QFileDialog, QMessageBox, QProgressBar,
-    QStackedWidget, QListWidget, QListWidgetItem, QGroupBox
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QLabel, QLineEdit, QPushButton, QComboBox, QFileDialog,
+    QCheckBox, QTabWidget, QScrollArea, QFrame, QSplitter,
+    QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox,
+    QStatusBar, QToolBar, QAction, QMenu, QSystemTrayIcon
 )
-from PyQt5.QtCore import Qt, QSize, QThread, pyqtSignal, QUrl, QSettings
-from PyQt5.QtGui import QIcon, QPixmap, QFont, QColor, QPalette, QDesktopServices
-from PyQt5.QtWebEngineWidgets import QWebEngineView
+from PyQt5.QtGui import QIcon, QPixmap, QFont, QColor, QPalette, QCursor
+from PyQt5.QtCore import Qt, QSize, QThread, pyqtSignal, QTimer, QSettings
 
-# Import Scrappy main class
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from main import Scrappy
-from src.utils.crawl4ai_integration import Crawl4AIManager
+# Import scraper modules
+from src.scrapers.github.crawler import GitHubScraper
+from src.scrapers.website.crawler import WebsiteScraper
+from src.scrapers.youtube.crawler import YouTubeScraper
+from src.utils.security import SecurityManager
+from src.utils.setup import SetupManager
+from src.formatters.converter import FormatConverter
+from src.storage.handler import StorageHandler
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger('scrappy.gui')
+logger = logging.getLogger('scrappy.ui.desktop')
 
-# Define colors
-DARK_BG = "#1a1625"
-DARKER_BG = "#141019"
-ACCENT_COLOR = "#6a4c93"
-TEXT_COLOR = "#f8f9fa"
-BUTTON_COLOR = "#6a4c93"
-BUTTON_HOVER = "#7d5ba6"
-BORDER_COLOR = "#2c2235"
+# Constants
+DARK_BG = "#1a1b26"
+DARKER_BG = "#16161e"
+ACCENT_COLOR = "#7aa2f7"
+SUCCESS_COLOR = "#9ece6a"
+WARNING_COLOR = "#e0af68"
+ERROR_COLOR = "#f7768e"
+TEXT_COLOR = "#c0caf5"
+SECONDARY_TEXT_COLOR = "#a9b1d6"
 
-class ScrapeWorker(QThread):
-    """
-    Worker thread for scraping operations.
-    """
-    progress_update = pyqtSignal(str, int)
-    scrape_complete = pyqtSignal(dict)
-    scrape_error = pyqtSignal(str)
+class ScrapingWorker(QThread):
+    """Worker thread for running scraping tasks."""
     
-    def __init__(self, scraper_type: str, url: str, output_formats: List[str], options: Dict[str, Any] = None):
-        """
-        Initialize the scrape worker.
-        
-        Args:
-            scraper_type: Type of scraper to use ('github', 'website', or 'youtube')
-            url: URL to scrape
-            output_formats: List of output formats to generate
-            options: Additional options for the scraper
-        """
+    progress_signal = pyqtSignal(str, int)
+    finished_signal = pyqtSignal(dict, bool)
+    
+    def __init__(self, scrape_type: str, url: str, output_dir: str, formats: List[str]):
+        """Initialize the worker thread."""
         super().__init__()
-        self.scraper_type = scraper_type
+        self.scrape_type = scrape_type
         self.url = url
-        self.output_formats = output_formats
-        self.options = options or {}
-        self.scrappy = Scrappy()
+        self.output_dir = output_dir
+        self.formats = formats
+        self.security = SecurityManager()
     
     def run(self):
-        """
-        Run the scraping operation.
-        """
+        """Run the scraping task."""
         try:
-            self.progress_update.emit("Initializing scraper...", 10)
+            # Validate inputs
+            if not self.security.validate_url(self.url):
+                self.finished_signal.emit({"error": "Invalid URL format"}, False)
+                return
             
-            if self.scraper_type == 'github':
-                self.progress_update.emit("Scraping GitHub repository...", 20)
-                result = self.scrappy.scrape_github(self.url, self.output_formats)
-            elif self.scraper_type == 'website':
-                depth = self.options.get('depth', 1)
-                self.progress_update.emit(f"Scraping website with depth {depth}...", 20)
-                result = self.scrappy.scrape_website(self.url, depth, self.output_formats)
-            elif self.scraper_type == 'youtube':
-                self.progress_update.emit("Scraping YouTube channel...", 20)
-                result = self.scrappy.scrape_youtube(self.url, self.output_formats)
+            if not self.security.validate_path(self.output_dir):
+                self.finished_signal.emit({"error": "Invalid output directory"}, False)
+                return
+            
+            # Create output directory if it doesn't exist
+            os.makedirs(self.output_dir, exist_ok=True)
+            
+            # Initialize appropriate scraper
+            self.progress_signal.emit("Initializing scraper...", 10)
+            
+            if self.scrape_type == "github" or (self.scrape_type == "auto" and "github.com" in self.url):
+                scraper = GitHubScraper(self.url, self.output_dir)
+                self.progress_signal.emit("GitHub scraper initialized", 20)
+            
+            elif self.scrape_type == "website" or (self.scrape_type == "auto" and not any(x in self.url for x in ["github.com", "youtube.com"])):
+                scraper = WebsiteScraper(self.url, self.output_dir)
+                self.progress_signal.emit("Website scraper initialized", 20)
+            
+            elif self.scrape_type == "youtube" or (self.scrape_type == "auto" and "youtube.com" in self.url):
+                scraper = YouTubeScraper(self.url, self.output_dir)
+                self.progress_signal.emit("YouTube scraper initialized", 20)
+            
             else:
-                raise ValueError(f"Unknown scraper type: {self.scraper_type}")
+                self.finished_signal.emit({"error": "Invalid scraper type"}, False)
+                return
             
-            self.progress_update.emit("Processing results...", 80)
-            self.scrape_complete.emit(result)
+            # Run scraping
+            self.progress_signal.emit("Starting scraping process...", 30)
+            result = scraper.scrape()
+            self.progress_signal.emit("Scraping completed", 70)
             
+            # Convert to requested formats
+            self.progress_signal.emit("Converting to requested formats...", 80)
+            converter = FormatConverter()
+            
+            output_files = []
+            for fmt in self.formats:
+                if fmt.lower() == "json":
+                    # JSON is the default format, already saved
+                    continue
+                
+                output_file = converter.convert(result, fmt.lower(), self.output_dir)
+                output_files.append(output_file)
+            
+            self.progress_signal.emit("Conversion completed", 90)
+            
+            # Prepare result summary
+            summary = {
+                "url": self.url,
+                "type": self.scrape_type,
+                "output_dir": self.output_dir,
+                "formats": self.formats,
+                "timestamp": datetime.now().isoformat(),
+                "output_files": output_files
+            }
+            
+            # Signal completion
+            self.progress_signal.emit("Task completed successfully", 100)
+            self.finished_signal.emit(summary, True)
+        
         except Exception as e:
-            logger.error(f"Error in scrape worker: {str(e)}")
-            self.scrape_error.emit(str(e))
+            logger.error(f"Error in scraping worker: {str(e)}")
+            self.finished_signal.emit({"error": str(e)}, False)
 
-class StyledButton(QPushButton):
-    """
-    Custom styled button for the Scrappy GUI.
-    """
-    def __init__(self, text, parent=None, primary=True):
-        """
-        Initialize the styled button.
-        
-        Args:
-            text: Button text
-            parent: Parent widget
-            primary: Whether this is a primary button
-        """
-        super().__init__(text, parent)
-        self.primary = primary
-        self.setMinimumHeight(40)
-        self.setCursor(Qt.PointingHandCursor)
-        
-        if primary:
-            self.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: {BUTTON_COLOR};
-                    color: white;
-                    border: none;
-                    border-radius: 4px;
-                    padding: 8px 16px;
-                    font-weight: bold;
-                }}
-                QPushButton:hover {{
-                    background-color: {BUTTON_HOVER};
-                }}
-                QPushButton:pressed {{
-                    background-color: {ACCENT_COLOR};
-                }}
-            """)
-        else:
-            self.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: transparent;
-                    color: {TEXT_COLOR};
-                    border: 1px solid {BORDER_COLOR};
-                    border-radius: 4px;
-                    padding: 8px 16px;
-                }}
-                QPushButton:hover {{
-                    background-color: rgba(255, 255, 255, 0.1);
-                }}
-                QPushButton:pressed {{
-                    background-color: rgba(255, 255, 255, 0.05);
-                }}
-            """)
 
-class StyledLineEdit(QLineEdit):
-    """
-    Custom styled line edit for the Scrappy GUI.
-    """
-    def __init__(self, placeholder="", parent=None):
-        """
-        Initialize the styled line edit.
-        
-        Args:
-            placeholder: Placeholder text
-            parent: Parent widget
-        """
-        super().__init__(parent)
-        self.setPlaceholderText(placeholder)
-        self.setMinimumHeight(40)
-        self.setStyleSheet(f"""
-            QLineEdit {{
-                background-color: {DARKER_BG};
-                color: {TEXT_COLOR};
-                border: 1px solid {BORDER_COLOR};
-                border-radius: 4px;
-                padding: 8px 12px;
-            }}
-            QLineEdit:focus {{
-                border: 1px solid {ACCENT_COLOR};
-            }}
-        """)
-
-class StyledComboBox(QComboBox):
-    """
-    Custom styled combo box for the Scrappy GUI.
-    """
-    def __init__(self, parent=None):
-        """
-        Initialize the styled combo box.
-        
-        Args:
-            parent: Parent widget
-        """
-        super().__init__(parent)
-        self.setMinimumHeight(40)
-        self.setCursor(Qt.PointingHandCursor)
-        self.setStyleSheet(f"""
-            QComboBox {{
-                background-color: {DARKER_BG};
-                color: {TEXT_COLOR};
-                border: 1px solid {BORDER_COLOR};
-                border-radius: 4px;
-                padding: 8px 12px;
-            }}
-            QComboBox::drop-down {{
-                subcontrol-origin: padding;
-                subcontrol-position: top right;
-                width: 20px;
-                border-left-width: 1px;
-                border-left-color: {BORDER_COLOR};
-                border-left-style: solid;
-            }}
-            QComboBox QAbstractItemView {{
-                background-color: {DARKER_BG};
-                color: {TEXT_COLOR};
-                selection-background-color: {ACCENT_COLOR};
-            }}
-        """)
-
-class StyledCheckBox(QCheckBox):
-    """
-    Custom styled checkbox for the Scrappy GUI.
-    """
-    def __init__(self, text, parent=None):
-        """
-        Initialize the styled checkbox.
-        
-        Args:
-            text: Checkbox text
-            parent: Parent widget
-        """
-        super().__init__(text, parent)
-        self.setCursor(Qt.PointingHandCursor)
-        self.setStyleSheet(f"""
-            QCheckBox {{
-                color: {TEXT_COLOR};
-                spacing: 5px;
-            }}
-            QCheckBox::indicator {{
-                width: 18px;
-                height: 18px;
-                border: 1px solid {BORDER_COLOR};
-                border-radius: 3px;
-            }}
-            QCheckBox::indicator:unchecked {{
-                background-color: {DARKER_BG};
-            }}
-            QCheckBox::indicator:checked {{
-                background-color: {ACCENT_COLOR};
-                image: url(:/icons/check.png);
-            }}
-        """)
-
-class ScrappyGUI(QMainWindow):
-    """
-    Main window for the Scrappy desktop GUI.
-    """
+class ScrappyDesktopApp(QMainWindow):
+    """Main desktop application window for Scrappy."""
+    
     def __init__(self):
-        """
-        Initialize the main window.
-        """
+        """Initialize the application window."""
         super().__init__()
         
-        # Initialize Scrappy
-        self.scrappy = Scrappy()
+        # Initialize managers
+        self.security = SecurityManager()
+        self.setup_manager = SetupManager()
+        self.storage = StorageHandler()
         
-        # Initialize crawl4ai manager
-        self.crawl4ai_manager = Crawl4AIManager()
-        
-        # Set up the UI
+        # Initialize UI
         self.init_ui()
         
-        # Load settings
+        # Load settings and history
         self.load_settings()
+        self.load_history()
         
-        logger.info("Initialized Scrappy GUI")
+        # Check dependencies
+        self.check_dependencies()
     
     def init_ui(self):
-        """
-        Initialize the user interface.
-        """
+        """Initialize the user interface."""
         # Set window properties
-        self.setWindowTitle("Scrappy")
+        self.setWindowTitle("Scrappy - Universal Scraping and Delivery System")
         self.setMinimumSize(1000, 700)
+        self.setWindowIcon(QIcon(os.path.join(os.path.dirname(__file__), "icons", "scrappy_icon.png")))
         
-        # Set window icon
-        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons", "scrappy_icon.png")
-        if os.path.exists(icon_path):
-            self.setWindowIcon(QIcon(icon_path))
-        
-        # Set application style
+        # Set dark theme
         self.set_dark_theme()
         
-        # Create central widget
+        # Create central widget and main layout
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         
-        # Create main layout
         main_layout = QVBoxLayout(central_widget)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
@@ -299,1088 +178,1494 @@ class ScrappyGUI(QMainWindow):
         main_layout.addWidget(header)
         
         # Create content area
-        content = self.create_content()
-        main_layout.addWidget(content, 1)
+        content = QSplitter(Qt.Horizontal)
+        
+        # Create sidebar
+        sidebar = self.create_sidebar()
+        content.addWidget(sidebar)
+        
+        # Create tab widget for main content
+        self.tab_widget = QTabWidget()
+        self.tab_widget.setTabPosition(QTabWidget.North)
+        self.tab_widget.setDocumentMode(True)
+        self.tab_widget.setStyleSheet("""
+            QTabWidget::pane {
+                border: none;
+                background-color: #1a1b26;
+            }
+            QTabBar::tab {
+                background-color: #16161e;
+                color: #a9b1d6;
+                padding: 8px 16px;
+                border: none;
+                min-width: 100px;
+            }
+            QTabBar::tab:selected {
+                background-color: #1a1b26;
+                color: #c0caf5;
+                border-bottom: 2px solid #7aa2f7;
+            }
+        """)
+        
+        # Create dashboard tab
+        dashboard_tab = self.create_dashboard_tab()
+        self.tab_widget.addTab(dashboard_tab, "Dashboard")
+        
+        # Create new scrape tab
+        new_scrape_tab = self.create_new_scrape_tab()
+        self.tab_widget.addTab(new_scrape_tab, "New Scrape")
+        
+        # Create history tab
+        history_tab = self.create_history_tab()
+        self.tab_widget.addTab(history_tab, "History")
+        
+        # Create settings tab
+        settings_tab = self.create_settings_tab()
+        self.tab_widget.addTab(settings_tab, "Settings")
+        
+        content.addWidget(self.tab_widget)
+        
+        # Set stretch factors
+        content.setStretchFactor(0, 1)  # Sidebar
+        content.setStretchFactor(1, 4)  # Main content
+        
+        main_layout.addWidget(content)
         
         # Create status bar
-        self.statusBar().setStyleSheet(f"background-color: {DARKER_BG}; color: {TEXT_COLOR};")
-        self.statusBar().showMessage("Ready")
+        self.status_bar = QStatusBar()
+        self.status_bar.setStyleSheet(f"background-color: {DARKER_BG}; color: {SECONDARY_TEXT_COLOR};")
+        self.setStatusBar(self.status_bar)
+        
+        # Set initial status
+        self.status_bar.showMessage("Ready")
+        
+        # Create system tray icon
+        self.create_tray_icon()
     
     def set_dark_theme(self):
-        """
-        Set dark theme for the application.
-        """
-        # Set application style
+        """Set dark theme for the application."""
+        palette = QPalette()
+        palette.setColor(QPalette.Window, QColor(DARK_BG))
+        palette.setColor(QPalette.WindowText, QColor(TEXT_COLOR))
+        palette.setColor(QPalette.Base, QColor(DARKER_BG))
+        palette.setColor(QPalette.AlternateBase, QColor(DARK_BG))
+        palette.setColor(QPalette.ToolTipBase, QColor(DARK_BG))
+        palette.setColor(QPalette.ToolTipText, QColor(TEXT_COLOR))
+        palette.setColor(QPalette.Text, QColor(TEXT_COLOR))
+        palette.setColor(QPalette.Button, QColor(DARK_BG))
+        palette.setColor(QPalette.ButtonText, QColor(TEXT_COLOR))
+        palette.setColor(QPalette.BrightText, Qt.red)
+        palette.setColor(QPalette.Link, QColor(ACCENT_COLOR))
+        palette.setColor(QPalette.Highlight, QColor(ACCENT_COLOR))
+        palette.setColor(QPalette.HighlightedText, Qt.black)
+        
+        self.setPalette(palette)
+        
+        # Set stylesheet for widgets
         self.setStyleSheet(f"""
-            QMainWindow, QWidget {{
+            QWidget {{
                 background-color: {DARK_BG};
                 color: {TEXT_COLOR};
+                font-family: 'Segoe UI', Arial, sans-serif;
             }}
-            QTabWidget::pane {{
-                border: 1px solid {BORDER_COLOR};
-                background-color: {DARK_BG};
-            }}
-            QTabBar::tab {{
+            
+            QLineEdit, QComboBox, QSpinBox, QTextEdit, QPlainTextEdit {{
                 background-color: {DARKER_BG};
-                color: {TEXT_COLOR};
-                padding: 8px 16px;
-                margin-right: 2px;
-                border-top-left-radius: 4px;
-                border-top-right-radius: 4px;
-            }}
-            QTabBar::tab:selected {{
-                background-color: {ACCENT_COLOR};
-            }}
-            QTabBar::tab:hover:!selected {{
-                background-color: {BORDER_COLOR};
-            }}
-            QScrollArea {{
-                border: none;
-            }}
-            QScrollBar:vertical {{
-                background-color: {DARKER_BG};
-                width: 12px;
-                margin: 0px;
-            }}
-            QScrollBar::handle:vertical {{
-                background-color: {BORDER_COLOR};
-                min-height: 20px;
-                border-radius: 6px;
-            }}
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
-                height: 0px;
-            }}
-            QProgressBar {{
-                border: 1px solid {BORDER_COLOR};
+                border: 1px solid #414868;
                 border-radius: 4px;
-                text-align: center;
-                background-color: {DARKER_BG};
+                padding: 8px;
+                color: {TEXT_COLOR};
             }}
-            QProgressBar::chunk {{
+            
+            QPushButton {{
                 background-color: {ACCENT_COLOR};
-                width: 1px;
+                color: #16161e;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }}
+            
+            QPushButton:hover {{
+                background-color: #91b4f9;
+            }}
+            
+            QPushButton:pressed {{
+                background-color: #6a8fd7;
+            }}
+            
+            QCheckBox::indicator {{
+                width: 18px;
+                height: 18px;
+                border: 1px solid #414868;
+                border-radius: 3px;
+            }}
+            
+            QCheckBox::indicator:checked {{
+                background-color: {ACCENT_COLOR};
+                border: 1px solid {ACCENT_COLOR};
             }}
         """)
     
     def create_header(self):
-        """
-        Create the header section.
+        """Create the application header."""
+        header = QFrame()
+        header.setStyleSheet(f"background-color: {DARKER_BG}; border-bottom: 1px solid #414868;")
+        header.setFixedHeight(60)
         
-        Returns:
-            Header widget
-        """
-        header = QWidget()
-        header.setStyleSheet(f"background-color: {DARK_BG};")
-        header.setMinimumHeight(150)
+        layout = QHBoxLayout(header)
+        layout.setContentsMargins(16, 0, 16, 0)
         
-        layout = QVBoxLayout(header)
-        layout.setContentsMargins(20, 20, 20, 20)
+        # Logo and title
+        logo_label = QLabel()
+        logo_pixmap = QPixmap(os.path.join(os.path.dirname(__file__), "icons", "scrappy_icon.png"))
+        logo_label.setPixmap(logo_pixmap.scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        layout.addWidget(logo_label)
         
-        # Title
-        title = QLabel("SCRAPPY")
-        title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("font-size: 48px; font-weight: bold; color: #f8f9fa;")
-        layout.addWidget(title)
+        title_label = QLabel("Scrappy")
+        title_label.setStyleSheet("font-size: 20px; font-weight: bold; color: #c0caf5;")
+        layout.addWidget(title_label)
         
-        # Subtitle
-        subtitle = QLabel("what can I get for you?")
-        subtitle.setAlignment(Qt.AlignCenter)
-        subtitle.setStyleSheet("font-size: 24px; color: #f8f9fa;")
-        layout.addWidget(subtitle)
+        version_label = QLabel("v1.0")
+        version_label.setStyleSheet(f"background-color: {ACCENT_COLOR}; color: #16161e; padding: 2px 6px; border-radius: 4px; font-size: 12px; font-weight: bold;")
+        layout.addWidget(version_label)
+        
+        layout.addStretch()
+        
+        # System status
+        status_icon = QLabel()
+        status_icon.setStyleSheet("background-color: #9ece6a; border-radius: 5px; min-width: 10px; min-height: 10px; max-width: 10px; max-height: 10px;")
+        layout.addWidget(status_icon)
+        
+        status_label = QLabel("System Online")
+        status_label.setStyleSheet("color: #a9b1d6;")
+        layout.addWidget(status_label)
+        
+        # Current time
+        self.time_label = QLabel(datetime.now().strftime("%I:%M:%S %p"))
+        self.time_label.setStyleSheet("color: #a9b1d6;")
+        layout.addWidget(self.time_label)
+        
+        # Update time every second
+        timer = QTimer(self)
+        timer.timeout.connect(self.update_time)
+        timer.start(1000)
         
         return header
     
-    def create_content(self):
-        """
-        Create the main content area.
+    def create_sidebar(self):
+        """Create the sidebar navigation."""
+        sidebar = QFrame()
+        sidebar.setStyleSheet(f"background-color: {DARKER_BG};")
+        sidebar.setFixedWidth(200)
         
-        Returns:
-            Content widget
-        """
-        content = QWidget()
+        layout = QVBoxLayout(sidebar)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
         
-        layout = QVBoxLayout(content)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(20)
-        
-        # Search bar
-        search_container = QWidget()
-        search_layout = QHBoxLayout(search_container)
-        search_layout.setContentsMargins(0, 0, 0, 0)
-        
-        self.search_input = StyledLineEdit("Let's find them")
-        search_layout.addWidget(self.search_input, 1)
-        
-        find_button = StyledButton("Find", primary=True)
-        find_button.clicked.connect(self.on_search)
-        search_layout.addWidget(find_button)
-        
-        layout.addWidget(search_container)
-        
-        # Filter options
-        filter_container = QWidget()
-        filter_layout = QHBoxLayout(filter_container)
-        filter_layout.setContentsMargins(0, 0, 0, 0)
-        filter_layout.setSpacing(10)
-        
-        # Source type
-        source_container = QWidget()
-        source_layout = QVBoxLayout(source_container)
-        source_layout.setContentsMargins(0, 0, 0, 0)
-        
-        source_label = QLabel("Source")
-        source_label.setStyleSheet(f"color: {TEXT_COLOR};")
-        source_layout.addWidget(source_label)
-        
-        self.source_combo = StyledComboBox()
-        self.source_combo.addItems(["GitHub", "Website", "YouTube"])
-        source_layout.addWidget(self.source_combo)
-        
-        filter_layout.addWidget(source_container)
-        
-        # Options
-        options_container = QWidget()
-        options_layout = QVBoxLayout(options_container)
-        options_layout.setContentsMargins(0, 0, 0, 0)
-        
-        options_label = QLabel("Options")
-        options_label.setStyleSheet(f"color: {TEXT_COLOR};")
-        options_layout.addWidget(options_label)
-        
-        self.options_combo = StyledComboBox()
-        self.update_options_combo()
-        options_layout.addWidget(self.options_combo)
-        
-        filter_layout.addWidget(options_container)
-        
-        # Output formats
-        formats_container = QWidget()
-        formats_layout = QVBoxLayout(formats_container)
-        formats_layout.setContentsMargins(0, 0, 0, 0)
-        
-        formats_label = QLabel("Output Formats")
-        formats_label.setStyleSheet(f"color: {TEXT_COLOR};")
-        formats_layout.addWidget(formats_label)
-        
-        formats_widget = QWidget()
-        formats_widget_layout = QHBoxLayout(formats_widget)
-        formats_widget_layout.setContentsMargins(0, 0, 0, 0)
-        formats_widget_layout.setSpacing(10)
-        
-        self.format_checkboxes = {}
-        for fmt in ["JSON", "CSV", "TXT", "YAML", "XML"]:
-            checkbox = StyledCheckBox(fmt)
-            if fmt == "JSON":
-                checkbox.setChecked(True)
-            self.format_checkboxes[fmt.lower()] = checkbox
-            formats_widget_layout.addWidget(checkbox)
-        
-        formats_layout.addWidget(formats_widget)
-        
-        filter_layout.addWidget(formats_container)
-        
-        # Output directory
-        output_container = QWidget()
-        output_layout = QVBoxLayout(output_container)
-        output_layout.setContentsMargins(0, 0, 0, 0)
-        
-        output_label = QLabel("Output Directory")
-        output_label.setStyleSheet(f"color: {TEXT_COLOR};")
-        output_layout.addWidget(output_label)
-        
-        output_widget = QWidget()
-        output_widget_layout = QHBoxLayout(output_widget)
-        output_widget_layout.setContentsMargins(0, 0, 0, 0)
-        output_widget_layout.setSpacing(10)
-        
-        self.output_dir_input = StyledLineEdit()
-        output_widget_layout.addWidget(self.output_dir_input, 1)
-        
-        browse_button = StyledButton("Browse", primary=False)
-        browse_button.clicked.connect(self.browse_output_dir)
-        output_widget_layout.addWidget(browse_button)
-        
-        output_layout.addWidget(output_widget)
-        
-        filter_layout.addWidget(output_container)
-        
-        layout.addWidget(filter_container)
-        
-        # Tabs for different views
-        self.tabs = QTabWidget()
-        self.tabs.setStyleSheet(f"""
-            QTabWidget::pane {{
-                border: 1px solid {BORDER_COLOR};
-                background-color: {DARK_BG};
+        # Dashboard button
+        dashboard_btn = QPushButton("  Dashboard")
+        dashboard_btn.setIcon(QIcon.fromTheme("dashboard", QIcon.fromTheme("view-grid")))
+        dashboard_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: #3b4261;
+                color: {TEXT_COLOR};
+                border: none;
+                border-radius: 0;
+                padding: 16px;
+                text-align: left;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: #414868;
             }}
         """)
+        dashboard_btn.clicked.connect(lambda: self.tab_widget.setCurrentIndex(0))
+        layout.addWidget(dashboard_btn)
         
-        # Results tab
-        self.results_tab = self.create_results_tab()
-        self.tabs.addTab(self.results_tab, "Results")
-        
-        # Saved data tab
-        self.saved_data_tab = self.create_saved_data_tab()
-        self.tabs.addTab(self.saved_data_tab, "Saved Data")
-        
-        # Settings tab
-        self.settings_tab = self.create_settings_tab()
-        self.tabs.addTab(self.settings_tab, "Settings")
-        
-        layout.addWidget(self.tabs, 1)
-        
-        # Connect signals
-        self.source_combo.currentIndexChanged.connect(self.update_options_combo)
-        
-        return content
-    
-    def create_results_tab(self):
-        """
-        Create the results tab.
-        
-        Returns:
-            Results tab widget
-        """
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        
-        # Results area
-        self.results_stack = QStackedWidget()
-        
-        # Empty state
-        empty_widget = QWidget()
-        empty_layout = QVBoxLayout(empty_widget)
-        empty_layout.setAlignment(Qt.AlignCenter)
-        
-        empty_label = QLabel("No results yet")
-        empty_label.setAlignment(Qt.AlignCenter)
-        empty_label.setStyleSheet("font-size: 18px; color: #6c757d;")
-        empty_layout.addWidget(empty_label)
-        
-        start_button = StyledButton("Start Scraping", primary=True)
-        start_button.clicked.connect(self.on_search)
-        empty_layout.addWidget(start_button, 0, Qt.AlignCenter)
-        
-        self.results_stack.addWidget(empty_widget)
-        
-        # Loading state
-        loading_widget = QWidget()
-        loading_layout = QVBoxLayout(loading_widget)
-        loading_layout.setAlignment(Qt.AlignCenter)
-        
-        loading_label = QLabel("Scraping in progress...")
-        loading_label.setAlignment(Qt.AlignCenter)
-        loading_label.setStyleSheet("font-size: 18px;")
-        loading_layout.addWidget(loading_label)
-        
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setMinimum(0)
-        self.progress_bar.setMaximum(100)
-        self.progress_bar.setValue(0)
-        self.progress_bar.setTextVisible(True)
-        self.progress_bar.setMinimumWidth(400)
-        loading_layout.addWidget(self.progress_bar, 0, Qt.AlignCenter)
-        
-        self.progress_label = QLabel("Initializing...")
-        self.progress_label.setAlignment(Qt.AlignCenter)
-        loading_layout.addWidget(self.progress_label)
-        
-        cancel_button = StyledButton("Cancel", primary=False)
-        cancel_button.clicked.connect(self.cancel_scraping)
-        loading_layout.addWidget(cancel_button, 0, Qt.AlignCenter)
-        
-        self.results_stack.addWidget(loading_widget)
-        
-        # Results state
-        self.results_widget = QWidget()
-        results_layout = QVBoxLayout(self.results_widget)
-        
-        # Results header
-        results_header = QWidget()
-        results_header_layout = QHBoxLayout(results_header)
-        results_header_layout.setContentsMargins(0, 0, 0, 0)
-        
-        self.results_title = QLabel("Results")
-        self.results_title.setStyleSheet("font-size: 18px; font-weight: bold;")
-        results_header_layout.addWidget(self.results_title, 1)
-        
-        export_button = StyledButton("Export", primary=False)
-        export_button.clicked.connect(self.export_results)
-        results_header_layout.addWidget(export_button)
-        
-        new_search_button = StyledButton("New Search", primary=True)
-        new_search_button.clicked.connect(self.new_search)
-        results_header_layout.addWidget(new_search_button)
-        
-        results_layout.addWidget(results_header)
-        
-        # Results content
-        results_content = QScrollArea()
-        results_content.setWidgetResizable(True)
-        results_content.setFrameShape(QFrame.NoFrame)
-        
-        self.results_content_widget = QWidget()
-        self.results_content_layout = QVBoxLayout(self.results_content_widget)
-        self.results_content_layout.setAlignment(Qt.AlignTop)
-        
-        results_content.setWidget(self.results_content_widget)
-        results_layout.addWidget(results_content, 1)
-        
-        self.results_stack.addWidget(self.results_widget)
-        
-        layout.addWidget(self.results_stack)
-        
-        return tab
-    
-    def create_saved_data_tab(self):
-        """
-        Create the saved data tab.
-        
-        Returns:
-            Saved data tab widget
-        """
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        
-        # Saved data list
-        self.saved_data_list = QListWidget()
-        self.saved_data_list.setStyleSheet(f"""
-            QListWidget {{
+        # New Scrape button
+        new_scrape_btn = QPushButton("  New Scrape")
+        new_scrape_btn.setIcon(QIcon.fromTheme("document-new", QIcon.fromTheme("list-add")))
+        new_scrape_btn.setStyleSheet(f"""
+            QPushButton {{
                 background-color: {DARKER_BG};
-                border: 1px solid {BORDER_COLOR};
-                border-radius: 4px;
-            }}
-            QListWidget::item {{
-                padding: 10px;
-                border-bottom: 1px solid {BORDER_COLOR};
-            }}
-            QListWidget::item:selected {{
-                background-color: {ACCENT_COLOR};
-            }}
-        """)
-        self.saved_data_list.itemDoubleClicked.connect(self.view_saved_data)
-        layout.addWidget(self.saved_data_list)
-        
-        # Buttons
-        buttons_widget = QWidget()
-        buttons_layout = QHBoxLayout(buttons_widget)
-        buttons_layout.setContentsMargins(0, 0, 0, 0)
-        
-        refresh_button = StyledButton("Refresh", primary=False)
-        refresh_button.clicked.connect(self.refresh_saved_data)
-        buttons_layout.addWidget(refresh_button)
-        
-        view_button = StyledButton("View", primary=True)
-        view_button.clicked.connect(lambda: self.view_saved_data(self.saved_data_list.currentItem()))
-        buttons_layout.addWidget(view_button)
-        
-        delete_button = StyledButton("Delete", primary=False)
-        delete_button.clicked.connect(self.delete_saved_data)
-        buttons_layout.addWidget(delete_button)
-        
-        layout.addWidget(buttons_widget)
-        
-        # Load saved data
-        self.refresh_saved_data()
-        
-        return tab
-    
-    def create_settings_tab(self):
-        """
-        Create the settings tab.
-        
-        Returns:
-            Settings tab widget
-        """
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        
-        # Crawl4AI settings
-        crawl4ai_group = QGroupBox("Crawl4AI Settings")
-        crawl4ai_group.setStyleSheet(f"""
-            QGroupBox {{
-                border: 1px solid {BORDER_COLOR};
-                border-radius: 4px;
-                margin-top: 1ex;
-                padding-top: 10px;
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                subcontrol-position: top left;
-                padding: 0 5px;
                 color: {TEXT_COLOR};
+                border: none;
+                border-radius: 0;
+                padding: 16px;
+                text-align: left;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: #414868;
             }}
         """)
+        new_scrape_btn.clicked.connect(lambda: self.tab_widget.setCurrentIndex(1))
+        layout.addWidget(new_scrape_btn)
         
-        crawl4ai_layout = QVBoxLayout(crawl4ai_group)
-        
-        # User agent
-        user_agent_widget = QWidget()
-        user_agent_layout = QHBoxLayout(user_agent_widget)
-        user_agent_layout.setContentsMargins(0, 0, 0, 0)
-        
-        user_agent_label = QLabel("User Agent:")
-        user_agent_label.setMinimumWidth(100)
-        user_agent_layout.addWidget(user_agent_label)
-        
-        self.user_agent_input = StyledLineEdit()
-        self.user_agent_input.setText("Scrappy/1.0 (+https://github.com/k3ss-official/scrappy_v2)")
-        user_agent_layout.addWidget(self.user_agent_input, 1)
-        
-        crawl4ai_layout.addWidget(user_agent_widget)
-        
-        # Timeout
-        timeout_widget = QWidget()
-        timeout_layout = QHBoxLayout(timeout_widget)
-        timeout_layout.setContentsMargins(0, 0, 0, 0)
-        
-        timeout_label = QLabel("Timeout (seconds):")
-        timeout_label.setMinimumWidth(100)
-        timeout_layout.addWidget(timeout_label)
-        
-        self.timeout_combo = StyledComboBox()
-        self.timeout_combo.addItems(["10", "20", "30", "60", "120"])
-        self.timeout_combo.setCurrentText("30")
-        timeout_layout.addWidget(self.timeout_combo, 1)
-        
-        crawl4ai_layout.addWidget(timeout_widget)
-        
-        # Max retries
-        retries_widget = QWidget()
-        retries_layout = QHBoxLayout(retries_widget)
-        retries_layout.setContentsMargins(0, 0, 0, 0)
-        
-        retries_label = QLabel("Max Retries:")
-        retries_label.setMinimumWidth(100)
-        retries_layout.addWidget(retries_label)
-        
-        self.retries_combo = StyledComboBox()
-        self.retries_combo.addItems(["1", "2", "3", "5", "10"])
-        self.retries_combo.setCurrentText("3")
-        retries_layout.addWidget(self.retries_combo, 1)
-        
-        crawl4ai_layout.addWidget(retries_widget)
-        
-        # Follow redirects
-        redirects_widget = QWidget()
-        redirects_layout = QHBoxLayout(redirects_widget)
-        redirects_layout.setContentsMargins(0, 0, 0, 0)
-        
-        self.follow_redirects_checkbox = StyledCheckBox("Follow Redirects")
-        self.follow_redirects_checkbox.setChecked(True)
-        redirects_layout.addWidget(self.follow_redirects_checkbox)
-        
-        crawl4ai_layout.addWidget(redirects_widget)
-        
-        # Verify SSL
-        ssl_widget = QWidget()
-        ssl_layout = QHBoxLayout(ssl_widget)
-        ssl_layout.setContentsMargins(0, 0, 0, 0)
-        
-        self.verify_ssl_checkbox = StyledCheckBox("Verify SSL Certificates")
-        self.verify_ssl_checkbox.setChecked(True)
-        ssl_layout.addWidget(self.verify_ssl_checkbox)
-        
-        crawl4ai_layout.addWidget(ssl_widget)
-        
-        layout.addWidget(crawl4ai_group)
-        
-        # Application settings
-        app_group = QGroupBox("Application Settings")
-        app_group.setStyleSheet(f"""
-            QGroupBox {{
-                border: 1px solid {BORDER_COLOR};
-                border-radius: 4px;
-                margin-top: 1ex;
-                padding-top: 10px;
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                subcontrol-position: top left;
-                padding: 0 5px;
+        # History button
+        history_btn = QPushButton("  History")
+        history_btn.setIcon(QIcon.fromTheme("document-open-recent", QIcon.fromTheme("appointment-soon")))
+        history_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {DARKER_BG};
                 color: {TEXT_COLOR};
+                border: none;
+                border-radius: 0;
+                padding: 16px;
+                text-align: left;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: #414868;
             }}
         """)
+        history_btn.clicked.connect(lambda: self.tab_widget.setCurrentIndex(2))
+        layout.addWidget(history_btn)
         
-        app_layout = QVBoxLayout(app_group)
+        # Settings button
+        settings_btn = QPushButton("  Settings")
+        settings_btn.setIcon(QIcon.fromTheme("preferences-system", QIcon.fromTheme("configure")))
+        settings_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {DARKER_BG};
+                color: {TEXT_COLOR};
+                border: none;
+                border-radius: 0;
+                padding: 16px;
+                text-align: left;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: #414868;
+            }}
+        """)
+        settings_btn.clicked.connect(lambda: self.tab_widget.setCurrentIndex(3))
+        layout.addWidget(settings_btn)
         
-        # Default output directory
-        output_dir_widget = QWidget()
-        output_dir_layout = QHBoxLayout(output_dir_widget)
-        output_dir_layout.setContentsMargins(0, 0, 0, 0)
-        
-        output_dir_label = QLabel("Default Output Directory:")
-        output_dir_label.setMinimumWidth(150)
-        output_dir_layout.addWidget(output_dir_label)
-        
-        self.default_output_dir_input = StyledLineEdit()
-        self.default_output_dir_input.setText(os.path.join(os.path.expanduser("~"), "scrappy_data"))
-        output_dir_layout.addWidget(self.default_output_dir_input, 1)
-        
-        browse_default_button = StyledButton("Browse", primary=False)
-        browse_default_button.clicked.connect(self.browse_default_output_dir)
-        output_dir_layout.addWidget(browse_default_button)
-        
-        app_layout.addWidget(output_dir_widget)
-        
-        # Default formats
-        default_formats_widget = QWidget()
-        default_formats_layout = QHBoxLayout(default_formats_widget)
-        default_formats_layout.setContentsMargins(0, 0, 0, 0)
-        
-        default_formats_label = QLabel("Default Output Formats:")
-        default_formats_label.setMinimumWidth(150)
-        default_formats_layout.addWidget(default_formats_label)
-        
-        formats_widget = QWidget()
-        formats_widget_layout = QHBoxLayout(formats_widget)
-        formats_widget_layout.setContentsMargins(0, 0, 0, 0)
-        formats_widget_layout.setSpacing(10)
-        
-        self.default_format_checkboxes = {}
-        for fmt in ["JSON", "CSV", "TXT", "YAML", "XML"]:
-            checkbox = StyledCheckBox(fmt)
-            if fmt == "JSON":
-                checkbox.setChecked(True)
-            self.default_format_checkboxes[fmt.lower()] = checkbox
-            formats_widget_layout.addWidget(checkbox)
-        
-        default_formats_layout.addWidget(formats_widget, 1)
-        
-        app_layout.addWidget(default_formats_widget)
-        
-        layout.addWidget(app_group)
-        
-        # Buttons
-        buttons_widget = QWidget()
-        buttons_layout = QHBoxLayout(buttons_widget)
-        buttons_layout.setContentsMargins(0, 0, 0, 0)
-        
-        reset_button = StyledButton("Reset to Defaults", primary=False)
-        reset_button.clicked.connect(self.reset_settings)
-        buttons_layout.addWidget(reset_button)
-        
-        save_button = StyledButton("Save Settings", primary=True)
-        save_button.clicked.connect(self.save_settings)
-        buttons_layout.addWidget(save_button)
-        
-        layout.addWidget(buttons_widget)
-        
-        # Add spacer
         layout.addStretch()
         
-        return tab
+        return sidebar
     
-    def update_options_combo(self):
-        """
-        Update options combo box based on selected source type.
-        """
-        self.options_combo.clear()
+    def create_dashboard_tab(self):
+        """Create the dashboard tab."""
+        dashboard = QWidget()
+        layout = QVBoxLayout(dashboard)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(24)
         
-        source_type = self.source_combo.currentText().lower()
+        # Dashboard title
+        title = QLabel("Dashboard Overview")
+        title.setStyleSheet("font-size: 24px; font-weight: bold; color: #c0caf5;")
+        layout.addWidget(title)
         
-        if source_type == "github":
-            self.options_combo.addItems(["Include Issues", "Include Pull Requests", "Include Files"])
-        elif source_type == "website":
-            self.options_combo.addItems(["Depth: 1", "Depth: 2", "Depth: 3"])
-        elif source_type == "youtube":
-            self.options_combo.addItems(["Include Transcripts", "Include Comments", "Analyze Content"])
+        # Metrics section
+        metrics_layout = QHBoxLayout()
+        metrics_layout.setSpacing(16)
+        
+        # Total Scrapes
+        total_scrapes = self.create_metric_card(
+            "Total Scrapes",
+            "0",
+            "download",
+            "#7aa2f7"
+        )
+        metrics_layout.addWidget(total_scrapes)
+        
+        # Files Generated
+        files_generated = self.create_metric_card(
+            "Files Generated",
+            "0",
+            "file",
+            "#9ece6a"
+        )
+        metrics_layout.addWidget(files_generated)
+        
+        # Data Processed
+        data_processed = self.create_metric_card(
+            "Data Processed",
+            "0 MB",
+            "database",
+            "#bb9af7"
+        )
+        metrics_layout.addWidget(data_processed)
+        
+        # Success Rate
+        success_rate = self.create_metric_card(
+            "Success Rate",
+            "0%",
+            "chart-line",
+            "#e0af68"
+        )
+        metrics_layout.addWidget(success_rate)
+        
+        layout.addLayout(metrics_layout)
+        
+        # New Scraping Task section
+        task_frame = QFrame()
+        task_frame.setStyleSheet(f"background-color: {DARKER_BG}; border-radius: 8px;")
+        task_layout = QVBoxLayout(task_frame)
+        task_layout.setContentsMargins(24, 24, 24, 24)
+        task_layout.setSpacing(16)
+        
+        task_title = QLabel("New Scraping Task")
+        task_title.setStyleSheet("font-size: 18px; font-weight: bold; color: #c0caf5;")
+        task_layout.addWidget(task_title)
+        
+        # WHAT to scrape
+        what_layout = QVBoxLayout()
+        what_label = QLabel("WHAT to scrape?")
+        what_label.setStyleSheet("font-weight: bold; color: #7aa2f7;")
+        what_layout.addWidget(what_label)
+        
+        what_input_layout = QHBoxLayout()
+        self.url_input = QLineEdit()
+        self.url_input.setPlaceholder("https://github.com/user/repo or https://example.com or @YouTubeChannel")
+        what_input_layout.addWidget(self.url_input)
+        
+        self.source_type = QComboBox()
+        self.source_type.addItems(["Auto-detect", "GitHub", "Website", "YouTube"])
+        what_input_layout.addWidget(self.source_type)
+        
+        what_layout.addLayout(what_input_layout)
+        task_layout.addLayout(what_layout)
+        
+        # WHERE to save
+        where_layout = QVBoxLayout()
+        where_label = QLabel("WHERE to save?")
+        where_label.setStyleSheet("font-weight: bold; color: #9ece6a;")
+        where_layout.addWidget(where_label)
+        
+        where_input_layout = QHBoxLayout()
+        self.output_dir = QLineEdit()
+        self.output_dir.setPlaceholder("/path/to/output/directory")
+        where_input_layout.addWidget(self.output_dir)
+        
+        browse_btn = QPushButton("Browse")
+        browse_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #9ece6a;
+                color: #16161e;
+            }
+            QPushButton:hover {
+                background-color: #aad97a;
+            }
+        """)
+        browse_btn.clicked.connect(self.browse_output_dir)
+        where_input_layout.addWidget(browse_btn)
+        
+        where_layout.addLayout(where_input_layout)
+        task_layout.addLayout(where_layout)
+        
+        # HOW to format output
+        how_layout = QVBoxLayout()
+        how_label = QLabel("HOW to format output?")
+        how_label.setStyleSheet("font-weight: bold; color: #e0af68;")
+        how_layout.addWidget(how_label)
+        
+        formats_layout = QHBoxLayout()
+        
+        self.json_checkbox = QCheckBox("JSON")
+        self.json_checkbox.setChecked(True)
+        formats_layout.addWidget(self.json_checkbox)
+        
+        self.csv_checkbox = QCheckBox("CSV")
+        formats_layout.addWidget(self.csv_checkbox)
+        
+        self.txt_checkbox = QCheckBox("TXT")
+        formats_layout.addWidget(self.txt_checkbox)
+        
+        self.html_checkbox = QCheckBox("HTML")
+        formats_layout.addWidget(self.html_checkbox)
+        
+        self.md_checkbox = QCheckBox("Markdown")
+        formats_layout.addWidget(self.md_checkbox)
+        
+        formats_layout.addStretch()
+        how_layout.addLayout(formats_layout)
+        task_layout.addLayout(how_layout)
+        
+        # Action buttons
+        buttons_layout = QHBoxLayout()
+        
+        start_btn = QPushButton("Start Scraping")
+        start_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #7aa2f7;
+                color: #16161e;
+                font-weight: bold;
+                padding: 12px 24px;
+            }
+            QPushButton:hover {
+                background-color: #91b4f9;
+            }
+        """)
+        start_btn.clicked.connect(self.start_scraping)
+        buttons_layout.addWidget(start_btn)
+        
+        save_template_btn = QPushButton("Save as Template")
+        save_template_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #414868;
+                color: #c0caf5;
+                font-weight: bold;
+                padding: 12px 24px;
+            }
+            QPushButton:hover {
+                background-color: #545c7e;
+            }
+        """)
+        save_template_btn.clicked.connect(self.save_template)
+        buttons_layout.addWidget(save_template_btn)
+        
+        buttons_layout.addStretch()
+        task_layout.addLayout(buttons_layout)
+        
+        layout.addWidget(task_frame)
+        
+        # Recent Activity section
+        activity_frame = QFrame()
+        activity_frame.setStyleSheet(f"background-color: {DARKER_BG}; border-radius: 8px;")
+        activity_layout = QVBoxLayout(activity_frame)
+        activity_layout.setContentsMargins(24, 24, 24, 24)
+        activity_layout.setSpacing(16)
+        
+        activity_title = QLabel("Recent Activity")
+        activity_title.setStyleSheet("font-size: 18px; font-weight: bold; color: #c0caf5;")
+        activity_layout.addWidget(activity_title)
+        
+        # Activity list will be populated from history
+        self.activity_list = QTableWidget(0, 4)
+        self.activity_list.setHorizontalHeaderLabels(["Type", "URL", "Time", "Status"])
+        self.activity_list.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.activity_list.setStyleSheet(f"""
+            QTableWidget {{
+                background-color: {DARKER_BG};
+                border: none;
+            }}
+            QHeaderView::section {{
+                background-color: {DARKER_BG};
+                color: {SECONDARY_TEXT_COLOR};
+                border: none;
+                padding: 8px;
+            }}
+            QTableWidget::item {{
+                padding: 8px;
+                border-bottom: 1px solid #414868;
+            }}
+        """)
+        activity_layout.addWidget(self.activity_list)
+        
+        layout.addWidget(activity_frame)
+        
+        return dashboard
+    
+    def create_metric_card(self, title, value, icon_name, color):
+        """Create a metric card for the dashboard."""
+        card = QFrame()
+        card.setStyleSheet(f"background-color: {DARKER_BG}; border-radius: 8px;")
+        
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(16, 16, 16, 16)
+        
+        title_label = QLabel(title)
+        title_label.setStyleSheet(f"color: {SECONDARY_TEXT_COLOR}; font-size: 14px;")
+        layout.addWidget(title_label)
+        
+        value_layout = QHBoxLayout()
+        
+        value_label = QLabel(value)
+        value_label.setStyleSheet(f"color: {TEXT_COLOR}; font-size: 24px; font-weight: bold;")
+        value_layout.addWidget(value_label)
+        
+        value_layout.addStretch()
+        
+        icon_label = QLabel()
+        icon_label.setStyleSheet(f"color: {color};")
+        # In a real implementation, we would set an actual icon here
+        icon_label.setText("📊")
+        value_layout.addWidget(icon_label)
+        
+        layout.addLayout(value_layout)
+        
+        return card
+    
+    def create_new_scrape_tab(self):
+        """Create the new scrape tab."""
+        # This is essentially the same as the task section in the dashboard
+        # In a real implementation, we would refactor this to avoid duplication
+        new_scrape = QWidget()
+        layout = QVBoxLayout(new_scrape)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(24)
+        
+        # New Scrape title
+        title = QLabel("New Scraping Task")
+        title.setStyleSheet("font-size: 24px; font-weight: bold; color: #c0caf5;")
+        layout.addWidget(title)
+        
+        # Task form
+        task_frame = QFrame()
+        task_frame.setStyleSheet(f"background-color: {DARKER_BG}; border-radius: 8px;")
+        task_layout = QVBoxLayout(task_frame)
+        task_layout.setContentsMargins(24, 24, 24, 24)
+        task_layout.setSpacing(24)
+        
+        # WHAT to scrape
+        what_layout = QVBoxLayout()
+        what_label = QLabel("WHAT to scrape?")
+        what_label.setStyleSheet("font-weight: bold; color: #7aa2f7; font-size: 16px;")
+        what_layout.addWidget(what_label)
+        
+        what_input_layout = QHBoxLayout()
+        self.url_input_tab = QLineEdit()
+        self.url_input_tab.setPlaceholder("https://github.com/user/repo or https://example.com or @YouTubeChannel")
+        what_input_layout.addWidget(self.url_input_tab)
+        
+        self.source_type_tab = QComboBox()
+        self.source_type_tab.addItems(["Auto-detect", "GitHub", "Website", "YouTube"])
+        what_input_layout.addWidget(self.source_type_tab)
+        
+        what_layout.addLayout(what_input_layout)
+        task_layout.addLayout(what_layout)
+        
+        # WHERE to save
+        where_layout = QVBoxLayout()
+        where_label = QLabel("WHERE to save?")
+        where_label.setStyleSheet("font-weight: bold; color: #9ece6a; font-size: 16px;")
+        where_layout.addWidget(where_label)
+        
+        where_input_layout = QHBoxLayout()
+        self.output_dir_tab = QLineEdit()
+        self.output_dir_tab.setPlaceholder("/path/to/output/directory")
+        where_input_layout.addWidget(self.output_dir_tab)
+        
+        browse_btn = QPushButton("Browse")
+        browse_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #9ece6a;
+                color: #16161e;
+            }
+            QPushButton:hover {
+                background-color: #aad97a;
+            }
+        """)
+        browse_btn.clicked.connect(self.browse_output_dir_tab)
+        where_input_layout.addWidget(browse_btn)
+        
+        where_layout.addLayout(where_input_layout)
+        task_layout.addLayout(where_layout)
+        
+        # HOW to format output
+        how_layout = QVBoxLayout()
+        how_label = QLabel("HOW to format output?")
+        how_label.setStyleSheet("font-weight: bold; color: #e0af68; font-size: 16px;")
+        how_layout.addWidget(how_label)
+        
+        formats_layout = QHBoxLayout()
+        
+        self.json_checkbox_tab = QCheckBox("JSON")
+        self.json_checkbox_tab.setChecked(True)
+        formats_layout.addWidget(self.json_checkbox_tab)
+        
+        self.csv_checkbox_tab = QCheckBox("CSV")
+        formats_layout.addWidget(self.csv_checkbox_tab)
+        
+        self.txt_checkbox_tab = QCheckBox("TXT")
+        formats_layout.addWidget(self.txt_checkbox_tab)
+        
+        self.html_checkbox_tab = QCheckBox("HTML")
+        formats_layout.addWidget(self.html_checkbox_tab)
+        
+        self.md_checkbox_tab = QCheckBox("Markdown")
+        formats_layout.addWidget(self.md_checkbox_tab)
+        
+        formats_layout.addStretch()
+        how_layout.addLayout(formats_layout)
+        task_layout.addLayout(how_layout)
+        
+        # Advanced options (collapsible)
+        advanced_layout = QVBoxLayout()
+        advanced_label = QLabel("Advanced Options")
+        advanced_label.setStyleSheet("font-weight: bold; color: #bb9af7; font-size: 16px;")
+        advanced_layout.addWidget(advanced_label)
+        
+        # Add advanced options here
+        # ...
+        
+        task_layout.addLayout(advanced_layout)
+        
+        # Action buttons
+        buttons_layout = QHBoxLayout()
+        
+        start_btn = QPushButton("Start Scraping")
+        start_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #7aa2f7;
+                color: #16161e;
+                font-weight: bold;
+                padding: 12px 24px;
+            }
+            QPushButton:hover {
+                background-color: #91b4f9;
+            }
+        """)
+        start_btn.clicked.connect(self.start_scraping_tab)
+        buttons_layout.addWidget(start_btn)
+        
+        save_template_btn = QPushButton("Save as Template")
+        save_template_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #414868;
+                color: #c0caf5;
+                font-weight: bold;
+                padding: 12px 24px;
+            }
+            QPushButton:hover {
+                background-color: #545c7e;
+            }
+        """)
+        save_template_btn.clicked.connect(self.save_template_tab)
+        buttons_layout.addWidget(save_template_btn)
+        
+        buttons_layout.addStretch()
+        task_layout.addLayout(buttons_layout)
+        
+        layout.addWidget(task_frame)
+        layout.addStretch()
+        
+        return new_scrape
+    
+    def create_history_tab(self):
+        """Create the history tab."""
+        history = QWidget()
+        layout = QVBoxLayout(history)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(24)
+        
+        # History title
+        title = QLabel("Scraping History")
+        title.setStyleSheet("font-size: 24px; font-weight: bold; color: #c0caf5;")
+        layout.addWidget(title)
+        
+        # History table
+        self.history_table = QTableWidget(0, 5)
+        self.history_table.setHorizontalHeaderLabels(["Type", "URL", "Time", "Formats", "Status"])
+        self.history_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.history_table.setStyleSheet(f"""
+            QTableWidget {{
+                background-color: {DARKER_BG};
+                border: none;
+                border-radius: 8px;
+            }}
+            QHeaderView::section {{
+                background-color: {DARKER_BG};
+                color: {SECONDARY_TEXT_COLOR};
+                border: none;
+                padding: 8px;
+            }}
+            QTableWidget::item {{
+                padding: 8px;
+                border-bottom: 1px solid #414868;
+            }}
+        """)
+        layout.addWidget(self.history_table)
+        
+        # Action buttons
+        buttons_layout = QHBoxLayout()
+        
+        clear_btn = QPushButton("Clear History")
+        clear_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #f7768e;
+                color: #16161e;
+                font-weight: bold;
+                padding: 8px 16px;
+            }
+            QPushButton:hover {
+                background-color: #ff8c9e;
+            }
+        """)
+        clear_btn.clicked.connect(self.clear_history)
+        buttons_layout.addWidget(clear_btn)
+        
+        export_btn = QPushButton("Export History")
+        export_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #414868;
+                color: #c0caf5;
+                font-weight: bold;
+                padding: 8px 16px;
+            }
+            QPushButton:hover {
+                background-color: #545c7e;
+            }
+        """)
+        export_btn.clicked.connect(self.export_history)
+        buttons_layout.addWidget(export_btn)
+        
+        buttons_layout.addStretch()
+        layout.addLayout(buttons_layout)
+        
+        return history
+    
+    def create_settings_tab(self):
+        """Create the settings tab."""
+        settings = QWidget()
+        layout = QVBoxLayout(settings)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(24)
+        
+        # Settings title
+        title = QLabel("Settings")
+        title.setStyleSheet("font-size: 24px; font-weight: bold; color: #c0caf5;")
+        layout.addWidget(title)
+        
+        # Settings sections
+        settings_frame = QFrame()
+        settings_frame.setStyleSheet(f"background-color: {DARKER_BG}; border-radius: 8px;")
+        settings_layout = QVBoxLayout(settings_frame)
+        settings_layout.setContentsMargins(24, 24, 24, 24)
+        settings_layout.setSpacing(24)
+        
+        # General settings
+        general_label = QLabel("General Settings")
+        general_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #c0caf5;")
+        settings_layout.addWidget(general_label)
+        
+        # Default output directory
+        default_dir_layout = QHBoxLayout()
+        default_dir_label = QLabel("Default Output Directory:")
+        default_dir_layout.addWidget(default_dir_label)
+        
+        self.default_dir_input = QLineEdit()
+        default_dir_layout.addWidget(self.default_dir_input)
+        
+        default_dir_browse = QPushButton("Browse")
+        default_dir_browse.clicked.connect(self.browse_default_dir)
+        default_dir_layout.addWidget(default_dir_browse)
+        
+        settings_layout.addLayout(default_dir_layout)
+        
+        # Default output formats
+        default_formats_layout = QVBoxLayout()
+        default_formats_label = QLabel("Default Output Formats:")
+        default_formats_layout.addWidget(default_formats_label)
+        
+        formats_options = QHBoxLayout()
+        
+        self.default_json = QCheckBox("JSON")
+        self.default_json.setChecked(True)
+        formats_options.addWidget(self.default_json)
+        
+        self.default_csv = QCheckBox("CSV")
+        formats_options.addWidget(self.default_csv)
+        
+        self.default_txt = QCheckBox("TXT")
+        formats_options.addWidget(self.default_txt)
+        
+        self.default_html = QCheckBox("HTML")
+        formats_options.addWidget(self.default_html)
+        
+        self.default_md = QCheckBox("Markdown")
+        formats_options.addWidget(self.default_md)
+        
+        formats_options.addStretch()
+        default_formats_layout.addLayout(formats_options)
+        
+        settings_layout.addLayout(default_formats_layout)
+        
+        # Advanced settings
+        advanced_label = QLabel("Advanced Settings")
+        advanced_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #c0caf5; margin-top: 16px;")
+        settings_layout.addWidget(advanced_label)
+        
+        # Concurrent scraping tasks
+        concurrent_layout = QHBoxLayout()
+        concurrent_label = QLabel("Max Concurrent Tasks:")
+        concurrent_layout.addWidget(concurrent_label)
+        
+        self.concurrent_input = QComboBox()
+        self.concurrent_input.addItems(["1", "2", "3", "4", "5"])
+        concurrent_layout.addWidget(self.concurrent_input)
+        
+        concurrent_layout.addStretch()
+        settings_layout.addLayout(concurrent_layout)
+        
+        # Request timeout
+        timeout_layout = QHBoxLayout()
+        timeout_label = QLabel("Request Timeout (seconds):")
+        timeout_layout.addWidget(timeout_label)
+        
+        self.timeout_input = QComboBox()
+        self.timeout_input.addItems(["10", "20", "30", "60", "120"])
+        self.timeout_input.setCurrentIndex(2)  # Default to 30 seconds
+        timeout_layout.addWidget(self.timeout_input)
+        
+        timeout_layout.addStretch()
+        settings_layout.addLayout(timeout_layout)
+        
+        # User agent
+        user_agent_layout = QHBoxLayout()
+        user_agent_label = QLabel("User Agent:")
+        user_agent_layout.addWidget(user_agent_label)
+        
+        self.user_agent_input = QLineEdit("Scrappy/1.0 (+https://github.com/k3ss-official/scrappy_v2)")
+        user_agent_layout.addWidget(self.user_agent_input)
+        
+        settings_layout.addLayout(user_agent_layout)
+        
+        settings_layout.addStretch()
+        
+        # Save settings button
+        save_settings_btn = QPushButton("Save Settings")
+        save_settings_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #7aa2f7;
+                color: #16161e;
+                font-weight: bold;
+                padding: 12px 24px;
+            }
+            QPushButton:hover {
+                background-color: #91b4f9;
+            }
+        """)
+        save_settings_btn.clicked.connect(self.save_settings)
+        settings_layout.addWidget(save_settings_btn)
+        
+        layout.addWidget(settings_frame)
+        
+        return settings
+    
+    def create_tray_icon(self):
+        """Create system tray icon."""
+        self.tray_icon = QSystemTrayIcon(self)
+        self.tray_icon.setIcon(QIcon(os.path.join(os.path.dirname(__file__), "icons", "scrappy_icon.png")))
+        
+        # Create tray menu
+        tray_menu = QMenu()
+        
+        show_action = QAction("Show Scrappy", self)
+        show_action.triggered.connect(self.show)
+        tray_menu.addAction(show_action)
+        
+        new_scrape_action = QAction("New Scrape", self)
+        new_scrape_action.triggered.connect(lambda: self.show() or self.tab_widget.setCurrentIndex(1))
+        tray_menu.addAction(new_scrape_action)
+        
+        tray_menu.addSeparator()
+        
+        quit_action = QAction("Quit", self)
+        quit_action.triggered.connect(QApplication.quit)
+        tray_menu.addAction(quit_action)
+        
+        self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.show()
+    
+    def update_time(self):
+        """Update the time display in the header."""
+        self.time_label.setText(datetime.now().strftime("%I:%M:%S %p"))
     
     def browse_output_dir(self):
-        """
-        Browse for output directory.
-        """
+        """Open file dialog to select output directory."""
         directory = QFileDialog.getExistingDirectory(self, "Select Output Directory")
         if directory:
-            self.output_dir_input.setText(directory)
+            self.output_dir.setText(directory)
     
-    def browse_default_output_dir(self):
-        """
-        Browse for default output directory.
-        """
+    def browse_output_dir_tab(self):
+        """Open file dialog to select output directory (for tab)."""
+        directory = QFileDialog.getExistingDirectory(self, "Select Output Directory")
+        if directory:
+            self.output_dir_tab.setText(directory)
+    
+    def browse_default_dir(self):
+        """Open file dialog to select default output directory."""
         directory = QFileDialog.getExistingDirectory(self, "Select Default Output Directory")
         if directory:
-            self.default_output_dir_input.setText(directory)
+            self.default_dir_input.setText(directory)
     
-    def on_search(self):
-        """
-        Handle search button click.
-        """
-        # Get search parameters
-        url = self.search_input.text().strip()
+    def start_scraping(self):
+        """Start the scraping process from dashboard."""
+        url = self.url_input.text()
+        output_dir = self.output_dir.text()
+        
         if not url:
             QMessageBox.warning(self, "Input Error", "Please enter a URL to scrape.")
             return
         
-        # Get source type
-        source_type = self.source_combo.currentText().lower()
+        if not output_dir:
+            QMessageBox.warning(self, "Input Error", "Please select an output directory.")
+            return
         
-        # Get options
-        options = {}
-        option_text = self.options_combo.currentText()
+        # Get selected formats
+        formats = []
+        if self.json_checkbox.isChecked():
+            formats.append("json")
+        if self.csv_checkbox.isChecked():
+            formats.append("csv")
+        if self.txt_checkbox.isChecked():
+            formats.append("txt")
+        if self.html_checkbox.isChecked():
+            formats.append("html")
+        if self.md_checkbox.isChecked():
+            formats.append("md")
         
-        if source_type == "website" and "Depth:" in option_text:
-            depth = int(option_text.split(":")[1].strip())
-            options["depth"] = depth
-        
-        # Get output formats
-        output_formats = []
-        for fmt, checkbox in self.format_checkboxes.items():
-            if checkbox.isChecked():
-                output_formats.append(fmt)
-        
-        if not output_formats:
+        if not formats:
             QMessageBox.warning(self, "Input Error", "Please select at least one output format.")
             return
         
-        # Get output directory
-        output_dir = self.output_dir_input.text().strip()
+        # Get source type
+        source_type = self.source_type.currentText().lower()
+        if source_type == "auto-detect":
+            source_type = "auto"
+        
+        # Create and start worker thread
+        self.worker = ScrapingWorker(source_type, url, output_dir, formats)
+        self.worker.progress_signal.connect(self.update_progress)
+        self.worker.finished_signal.connect(self.scraping_finished)
+        self.worker.start()
+        
+        # Show progress dialog
+        self.show_progress_dialog()
+    
+    def start_scraping_tab(self):
+        """Start the scraping process from tab."""
+        url = self.url_input_tab.text()
+        output_dir = self.output_dir_tab.text()
+        
+        if not url:
+            QMessageBox.warning(self, "Input Error", "Please enter a URL to scrape.")
+            return
+        
         if not output_dir:
-            output_dir = os.path.join(os.path.expanduser("~"), "scrappy_data")
-            self.output_dir_input.setText(output_dir)
+            QMessageBox.warning(self, "Input Error", "Please select an output directory.")
+            return
         
-        # Create output directory if it doesn't exist
-        os.makedirs(output_dir, exist_ok=True)
+        # Get selected formats
+        formats = []
+        if self.json_checkbox_tab.isChecked():
+            formats.append("json")
+        if self.csv_checkbox_tab.isChecked():
+            formats.append("csv")
+        if self.txt_checkbox_tab.isChecked():
+            formats.append("txt")
+        if self.html_checkbox_tab.isChecked():
+            formats.append("html")
+        if self.md_checkbox_tab.isChecked():
+            formats.append("md")
         
-        # Update UI
-        self.results_stack.setCurrentIndex(1)  # Show loading state
-        self.progress_bar.setValue(0)
-        self.progress_label.setText("Initializing...")
+        if not formats:
+            QMessageBox.warning(self, "Input Error", "Please select at least one output format.")
+            return
         
-        # Start scraping in a separate thread
-        self.scrape_worker = ScrapeWorker(source_type, url, output_formats, options)
-        self.scrape_worker.progress_update.connect(self.update_progress)
-        self.scrape_worker.scrape_complete.connect(self.on_scrape_complete)
-        self.scrape_worker.scrape_error.connect(self.on_scrape_error)
-        self.scrape_worker.start()
+        # Get source type
+        source_type = self.source_type_tab.currentText().lower()
+        if source_type == "auto-detect":
+            source_type = "auto"
+        
+        # Create and start worker thread
+        self.worker = ScrapingWorker(source_type, url, output_dir, formats)
+        self.worker.progress_signal.connect(self.update_progress)
+        self.worker.finished_signal.connect(self.scraping_finished)
+        self.worker.start()
+        
+        # Show progress dialog
+        self.show_progress_dialog()
+    
+    def show_progress_dialog(self):
+        """Show progress dialog for scraping task."""
+        self.progress_dialog = QMessageBox(self)
+        self.progress_dialog.setWindowTitle("Scraping in Progress")
+        self.progress_dialog.setText("Initializing scraper...")
+        self.progress_dialog.setStandardButtons(QMessageBox.Cancel)
+        self.progress_dialog.buttonClicked.connect(self.cancel_scraping)
+        self.progress_dialog.show()
     
     def update_progress(self, message, progress):
-        """
-        Update progress bar and label.
-        
-        Args:
-            message: Progress message
-            progress: Progress value (0-100)
-        """
-        self.progress_label.setText(message)
-        self.progress_bar.setValue(progress)
-    
-    def on_scrape_complete(self, result):
-        """
-        Handle scrape completion.
-        
-        Args:
-            result: Scrape result
-        """
-        # Update UI
-        self.results_stack.setCurrentIndex(2)  # Show results state
-        
-        # Clear previous results
-        while self.results_content_layout.count():
-            item = self.results_content_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        
-        # Set results title
-        scraper_type = result.get('scraper_type', 'unknown')
-        identifier = result.get('identifier', 'unknown')
-        self.results_title.setText(f"{scraper_type.capitalize()}: {identifier}")
-        
-        # Add result information
-        info_frame = QFrame()
-        info_frame.setFrameShape(QFrame.StyledPanel)
-        info_frame.setStyleSheet(f"""
-            QFrame {{
-                background-color: {DARKER_BG};
-                border: 1px solid {BORDER_COLOR};
-                border-radius: 4px;
-                padding: 10px;
-            }}
-        """)
-        
-        info_layout = QVBoxLayout(info_frame)
-        
-        # Add basic information
-        if scraper_type == 'github':
-            repo_data = result.get('data', {}).get('repository', {})
-            info_layout.addWidget(QLabel(f"<b>Repository:</b> {repo_data.get('name', 'Unknown')}"))
-            info_layout.addWidget(QLabel(f"<b>Owner:</b> {repo_data.get('owner', 'Unknown')}"))
-            info_layout.addWidget(QLabel(f"<b>Files:</b> {result.get('data', {}).get('files_count', 0)}"))
-            info_layout.addWidget(QLabel(f"<b>Issues:</b> {result.get('data', {}).get('issues_count', 0)}"))
-        elif scraper_type == 'website':
-            website_data = result.get('data', {})
-            info_layout.addWidget(QLabel(f"<b>Domain:</b> {website_data.get('domain', 'Unknown')}"))
-            info_layout.addWidget(QLabel(f"<b>Pages Crawled:</b> {website_data.get('pages_crawled', 0)}"))
-            info_layout.addWidget(QLabel(f"<b>Assets Downloaded:</b> {website_data.get('assets_downloaded', 0)}"))
-        elif scraper_type == 'youtube':
-            channel_data = result.get('data', {}).get('channel', {})
-            info_layout.addWidget(QLabel(f"<b>Channel:</b> {channel_data.get('handle', 'Unknown')}"))
-            info_layout.addWidget(QLabel(f"<b>Videos:</b> {result.get('data', {}).get('videos_count', 0)}"))
-        
-        # Add crawl date
-        crawl_date = result.get('data', {}).get('crawl_date', 'Unknown')
-        info_layout.addWidget(QLabel(f"<b>Crawl Date:</b> {crawl_date}"))
-        
-        self.results_content_layout.addWidget(info_frame)
-        
-        # Add output files
-        files_frame = QFrame()
-        files_frame.setFrameShape(QFrame.StyledPanel)
-        files_frame.setStyleSheet(f"""
-            QFrame {{
-                background-color: {DARKER_BG};
-                border: 1px solid {BORDER_COLOR};
-                border-radius: 4px;
-                padding: 10px;
-            }}
-        """)
-        
-        files_layout = QVBoxLayout(files_frame)
-        files_layout.addWidget(QLabel("<b>Output Files:</b>"))
-        
-        for fmt, path in result.get('output_files', {}).items():
-            file_widget = QWidget()
-            file_layout = QHBoxLayout(file_widget)
-            file_layout.setContentsMargins(0, 0, 0, 0)
-            
-            file_label = QLabel(f"{fmt.upper()}: {os.path.basename(path)}")
-            file_layout.addWidget(file_label, 1)
-            
-            open_button = StyledButton("Open", primary=False)
-            open_button.clicked.connect(lambda checked, p=path: self.open_file(p))
-            file_layout.addWidget(open_button)
-            
-            files_layout.addWidget(file_widget)
-        
-        self.results_content_layout.addWidget(files_frame)
-        
-        # Add spacer
-        self.results_content_layout.addStretch()
-        
-        # Refresh saved data list
-        self.refresh_saved_data()
-        
-        # Update status bar
-        self.statusBar().showMessage(f"Scraping completed: {scraper_type}/{identifier}")
-    
-    def on_scrape_error(self, error_message):
-        """
-        Handle scrape error.
-        
-        Args:
-            error_message: Error message
-        """
-        # Update UI
-        self.results_stack.setCurrentIndex(0)  # Show empty state
-        
-        # Show error message
-        QMessageBox.critical(self, "Scraping Error", f"An error occurred during scraping:\n\n{error_message}")
-        
-        # Update status bar
-        self.statusBar().showMessage("Scraping failed")
+        """Update progress dialog."""
+        if hasattr(self, 'progress_dialog') and self.progress_dialog.isVisible():
+            self.progress_dialog.setText(message)
     
     def cancel_scraping(self):
-        """
-        Cancel ongoing scraping operation.
-        """
-        if hasattr(self, 'scrape_worker') and self.scrape_worker.isRunning():
-            self.scrape_worker.terminate()
-            self.scrape_worker.wait()
+        """Cancel the scraping process."""
+        if hasattr(self, 'worker') and self.worker.isRunning():
+            self.worker.terminate()
+            self.status_bar.showMessage("Scraping cancelled")
+    
+    def scraping_finished(self, result, success):
+        """Handle scraping completion."""
+        if hasattr(self, 'progress_dialog') and self.progress_dialog.isVisible():
+            self.progress_dialog.close()
+        
+        if success:
+            QMessageBox.information(self, "Scraping Complete", "Scraping task completed successfully.")
+            self.status_bar.showMessage("Scraping completed successfully")
             
-            # Update UI
-            self.results_stack.setCurrentIndex(0)  # Show empty state
+            # Add to history
+            self.add_to_history(result)
             
-            # Update status bar
-            self.statusBar().showMessage("Scraping cancelled")
+            # Update dashboard metrics
+            self.update_metrics()
+        else:
+            error_message = result.get("error", "Unknown error")
+            QMessageBox.critical(self, "Scraping Failed", f"Scraping task failed: {error_message}")
+            self.status_bar.showMessage(f"Scraping failed: {error_message}")
     
-    def new_search(self):
-        """
-        Start a new search.
-        """
-        self.results_stack.setCurrentIndex(0)  # Show empty state
-        self.search_input.clear()
-        self.statusBar().showMessage("Ready for new search")
-    
-    def export_results(self):
-        """
-        Export results to a file.
-        """
-        # TODO: Implement export functionality
-        QMessageBox.information(self, "Export", "Export functionality will be implemented in a future version.")
-    
-    def refresh_saved_data(self):
-        """
-        Refresh saved data list.
-        """
-        self.saved_data_list.clear()
+    def add_to_history(self, result):
+        """Add scraping result to history."""
+        # Add to history data structure
+        if not hasattr(self, 'history_data'):
+            self.history_data = []
         
-        # Get saved data
-        saved_data = self.scrappy.list_saved_data()
+        self.history_data.append(result)
         
-        for data in saved_data:
-            scraper_type = data.get('scraper_type', 'unknown')
-            identifier = data.get('identifier', 'unknown')
-            saved_at = data.get('saved_at', 'unknown')
+        # Save history to file
+        self.save_history()
+        
+        # Update history table
+        self.update_history_table()
+        
+        # Update recent activity in dashboard
+        self.update_activity_list()
+    
+    def update_history_table(self):
+        """Update the history table with current data."""
+        if not hasattr(self, 'history_data'):
+            return
+        
+        self.history_table.setRowCount(0)
+        
+        for i, item in enumerate(reversed(self.history_data)):
+            self.history_table.insertRow(i)
             
-            item = QListWidgetItem(f"{scraper_type.capitalize()}: {identifier} (Saved: {saved_at})")
-            item.setData(Qt.UserRole, data)
-            self.saved_data_list.addItem(item)
+            # Type
+            type_item = QTableWidgetItem(item.get("type", "Unknown"))
+            self.history_table.setItem(i, 0, type_item)
+            
+            # URL
+            url_item = QTableWidgetItem(item.get("url", ""))
+            self.history_table.setItem(i, 1, url_item)
+            
+            # Time
+            timestamp = item.get("timestamp", "")
+            if timestamp:
+                try:
+                    dt = datetime.fromisoformat(timestamp)
+                    time_str = dt.strftime("%Y-%m-%d %H:%M:%S")
+                except:
+                    time_str = timestamp
+            else:
+                time_str = ""
+            
+            time_item = QTableWidgetItem(time_str)
+            self.history_table.setItem(i, 2, time_item)
+            
+            # Formats
+            formats = item.get("formats", [])
+            formats_str = ", ".join(formats)
+            formats_item = QTableWidgetItem(formats_str)
+            self.history_table.setItem(i, 3, formats_item)
+            
+            # Status
+            status_item = QTableWidgetItem("Success")
+            status_item.setForeground(QColor(SUCCESS_COLOR))
+            self.history_table.setItem(i, 4, status_item)
     
-    def view_saved_data(self, item):
-        """
-        View saved data.
-        
-        Args:
-            item: List widget item
-        """
-        if not item:
+    def update_activity_list(self):
+        """Update the recent activity list in dashboard."""
+        if not hasattr(self, 'history_data') or not hasattr(self, 'activity_list'):
             return
         
-        data = item.data(Qt.UserRole)
-        if not data:
-            return
+        self.activity_list.setRowCount(0)
         
-        scraper_type = data.get('scraper_type', 'unknown')
-        identifier = data.get('identifier', 'unknown')
+        # Show only the 5 most recent items
+        recent_items = self.history_data[-5:] if len(self.history_data) > 5 else self.history_data
         
-        # Load data
-        loaded_data = self.scrappy.load_data(scraper_type, identifier)
-        if not loaded_data:
-            QMessageBox.warning(self, "Data Error", f"Failed to load data for {scraper_type}/{identifier}")
-            return
-        
-        # Show data in a dialog
-        dialog = QDialog(self)
-        dialog.setWindowTitle(f"Saved Data: {scraper_type.capitalize()}/{identifier}")
-        dialog.setMinimumSize(800, 600)
-        
-        layout = QVBoxLayout(dialog)
-        
-        # Data content
-        content = QTextEdit()
-        content.setReadOnly(True)
-        content.setStyleSheet(f"""
-            QTextEdit {{
-                background-color: {DARKER_BG};
-                color: {TEXT_COLOR};
-                border: 1px solid {BORDER_COLOR};
-                border-radius: 4px;
-                padding: 10px;
-                font-family: monospace;
-            }}
-        """)
-        
-        # Format data as JSON
-        import json
-        formatted_data = json.dumps(loaded_data, indent=2)
-        content.setText(formatted_data)
-        
-        layout.addWidget(content)
-        
-        # Buttons
-        buttons_widget = QWidget()
-        buttons_layout = QHBoxLayout(buttons_widget)
-        buttons_layout.setContentsMargins(0, 0, 0, 0)
-        
-        export_button = StyledButton("Export", primary=False)
-        export_button.clicked.connect(lambda: self.export_data(scraper_type, identifier, loaded_data))
-        buttons_layout.addWidget(export_button)
-        
-        close_button = StyledButton("Close", primary=True)
-        close_button.clicked.connect(dialog.accept)
-        buttons_layout.addWidget(close_button)
-        
-        layout.addWidget(buttons_widget)
-        
-        dialog.exec_()
+        for i, item in enumerate(reversed(recent_items)):
+            self.activity_list.insertRow(i)
+            
+            # Type
+            type_item = QTableWidgetItem(item.get("type", "Unknown"))
+            self.activity_list.setItem(i, 0, type_item)
+            
+            # URL
+            url_item = QTableWidgetItem(item.get("url", ""))
+            self.activity_list.setItem(i, 1, url_item)
+            
+            # Time
+            timestamp = item.get("timestamp", "")
+            if timestamp:
+                try:
+                    dt = datetime.fromisoformat(timestamp)
+                    time_str = dt.strftime("%Y-%m-%d %H:%M:%S")
+                except:
+                    time_str = timestamp
+            else:
+                time_str = ""
+            
+            time_item = QTableWidgetItem(time_str)
+            self.activity_list.setItem(i, 2, time_item)
+            
+            # Status
+            status_item = QTableWidgetItem("Success")
+            status_item.setForeground(QColor(SUCCESS_COLOR))
+            self.activity_list.setItem(i, 3, status_item)
     
-    def delete_saved_data(self):
-        """
-        Delete saved data.
-        """
-        item = self.saved_data_list.currentItem()
-        if not item:
+    def update_metrics(self):
+        """Update dashboard metrics based on history."""
+        if not hasattr(self, 'history_data'):
             return
         
-        data = item.data(Qt.UserRole)
-        if not data:
+        # Count metrics
+        total_scrapes = len(self.history_data)
+        
+        # Count files
+        files_generated = 0
+        for item in self.history_data:
+            formats = item.get("formats", [])
+            files_generated += len(formats)
+        
+        # Estimate data processed (placeholder)
+        data_processed = total_scrapes * 0.5  # Rough estimate: 0.5 MB per scrape
+        
+        # Success rate (placeholder)
+        success_rate = 100  # Assuming all successful for now
+        
+        # Update UI elements (placeholder)
+        # In a real implementation, we would update the actual metric cards
+        self.status_bar.showMessage(f"Metrics updated: {total_scrapes} scrapes, {files_generated} files, {data_processed:.1f} MB, {success_rate}% success")
+    
+    def save_template(self):
+        """Save current scraping configuration as a template."""
+        url = self.url_input.text()
+        output_dir = self.output_dir.text()
+        
+        if not url and not output_dir:
+            QMessageBox.warning(self, "Template Error", "Please enter at least a URL or output directory to save as template.")
             return
         
-        scraper_type = data.get('scraper_type', 'unknown')
-        identifier = data.get('identifier', 'unknown')
+        # Get selected formats
+        formats = []
+        if self.json_checkbox.isChecked():
+            formats.append("json")
+        if self.csv_checkbox.isChecked():
+            formats.append("csv")
+        if self.txt_checkbox.isChecked():
+            formats.append("txt")
+        if self.html_checkbox.isChecked():
+            formats.append("html")
+        if self.md_checkbox.isChecked():
+            formats.append("md")
         
-        # Confirm deletion
+        # Get source type
+        source_type = self.source_type.currentText().lower()
+        if source_type == "auto-detect":
+            source_type = "auto"
+        
+        # Create template
+        template = {
+            "url": url,
+            "output_dir": output_dir,
+            "formats": formats,
+            "type": source_type,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # Save template
+        if not hasattr(self, 'templates'):
+            self.templates = []
+        
+        self.templates.append(template)
+        self.save_templates()
+        
+        QMessageBox.information(self, "Template Saved", "Scraping configuration saved as template.")
+    
+    def save_template_tab(self):
+        """Save current scraping configuration as a template (from tab)."""
+        url = self.url_input_tab.text()
+        output_dir = self.output_dir_tab.text()
+        
+        if not url and not output_dir:
+            QMessageBox.warning(self, "Template Error", "Please enter at least a URL or output directory to save as template.")
+            return
+        
+        # Get selected formats
+        formats = []
+        if self.json_checkbox_tab.isChecked():
+            formats.append("json")
+        if self.csv_checkbox_tab.isChecked():
+            formats.append("csv")
+        if self.txt_checkbox_tab.isChecked():
+            formats.append("txt")
+        if self.html_checkbox_tab.isChecked():
+            formats.append("html")
+        if self.md_checkbox_tab.isChecked():
+            formats.append("md")
+        
+        # Get source type
+        source_type = self.source_type_tab.currentText().lower()
+        if source_type == "auto-detect":
+            source_type = "auto"
+        
+        # Create template
+        template = {
+            "url": url,
+            "output_dir": output_dir,
+            "formats": formats,
+            "type": source_type,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # Save template
+        if not hasattr(self, 'templates'):
+            self.templates = []
+        
+        self.templates.append(template)
+        self.save_templates()
+        
+        QMessageBox.information(self, "Template Saved", "Scraping configuration saved as template.")
+    
+    def clear_history(self):
+        """Clear scraping history."""
         reply = QMessageBox.question(
-            self, "Confirm Deletion",
-            f"Are you sure you want to delete {scraper_type}/{identifier}?",
+            self, "Clear History",
+            "Are you sure you want to clear all scraping history?",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No
         )
         
         if reply == QMessageBox.Yes:
-            # Delete data
-            success = self.scrappy.delete_data(scraper_type, identifier)
-            
-            if success:
-                # Remove item from list
-                row = self.saved_data_list.row(item)
-                self.saved_data_list.takeItem(row)
-                
-                # Update status bar
-                self.statusBar().showMessage(f"Deleted {scraper_type}/{identifier}")
-            else:
-                QMessageBox.warning(self, "Deletion Error", f"Failed to delete {scraper_type}/{identifier}")
+            self.history_data = []
+            self.save_history()
+            self.update_history_table()
+            self.update_activity_list()
+            self.update_metrics()
+            self.status_bar.showMessage("History cleared")
     
-    def export_data(self, scraper_type, identifier, data):
-        """
-        Export data to a file.
+    def export_history(self):
+        """Export scraping history to file."""
+        if not hasattr(self, 'history_data') or not self.history_data:
+            QMessageBox.warning(self, "Export Error", "No history data to export.")
+            return
         
-        Args:
-            scraper_type: Type of scraper
-            identifier: Data identifier
-            data: Data to export
-        """
-        # Get file path
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Export Data", f"{scraper_type}_{identifier}.json",
-            "JSON Files (*.json);;All Files (*)"
+            self, "Export History", "", "JSON Files (*.json);;CSV Files (*.csv);;All Files (*)"
         )
         
         if not file_path:
             return
         
         try:
-            # Write data to file
-            with open(file_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2)
+            if file_path.endswith(".json"):
+                with open(file_path, 'w') as f:
+                    json.dump(self.history_data, f, indent=2)
+            elif file_path.endswith(".csv"):
+                import csv
+                with open(file_path, 'w', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(["Type", "URL", "Time", "Formats", "Status"])
+                    
+                    for item in self.history_data:
+                        writer.writerow([
+                            item.get("type", "Unknown"),
+                            item.get("url", ""),
+                            item.get("timestamp", ""),
+                            ", ".join(item.get("formats", [])),
+                            "Success"
+                        ])
+            else:
+                with open(file_path, 'w') as f:
+                    json.dump(self.history_data, f, indent=2)
             
-            # Show success message
-            QMessageBox.information(self, "Export Successful", f"Data exported to {file_path}")
+            QMessageBox.information(self, "Export Complete", f"History exported to {file_path}")
+            self.status_bar.showMessage(f"History exported to {file_path}")
+        
         except Exception as e:
-            QMessageBox.critical(self, "Export Error", f"Failed to export data: {str(e)}")
-    
-    def open_file(self, file_path):
-        """
-        Open a file with the default application.
-        
-        Args:
-            file_path: Path to the file
-        """
-        if os.path.exists(file_path):
-            QDesktopServices.openUrl(QUrl.fromLocalFile(file_path))
-        else:
-            QMessageBox.warning(self, "File Error", f"File not found: {file_path}")
-    
-    def reset_settings(self):
-        """
-        Reset settings to defaults.
-        """
-        # Reset crawl4ai settings
-        self.user_agent_input.setText("Scrappy/1.0 (+https://github.com/k3ss-official/scrappy_v2)")
-        self.timeout_combo.setCurrentText("30")
-        self.retries_combo.setCurrentText("3")
-        self.follow_redirects_checkbox.setChecked(True)
-        self.verify_ssl_checkbox.setChecked(True)
-        
-        # Reset application settings
-        self.default_output_dir_input.setText(os.path.join(os.path.expanduser("~"), "scrappy_data"))
-        
-        for fmt, checkbox in self.default_format_checkboxes.items():
-            checkbox.setChecked(fmt == "json")
-        
-        # Show message
-        self.statusBar().showMessage("Settings reset to defaults")
+            QMessageBox.critical(self, "Export Error", f"Failed to export history: {str(e)}")
     
     def save_settings(self):
-        """
-        Save settings.
-        """
-        # Create settings object
-        settings = QSettings("k3ss-official", "Scrappy")
+        """Save application settings."""
+        settings = QSettings("Scrappy", "ScrappyApp")
         
-        # Save crawl4ai settings
-        settings.setValue("crawl4ai/user_agent", self.user_agent_input.text())
-        settings.setValue("crawl4ai/timeout", self.timeout_combo.currentText())
-        settings.setValue("crawl4ai/max_retries", self.retries_combo.currentText())
-        settings.setValue("crawl4ai/follow_redirects", self.follow_redirects_checkbox.isChecked())
-        settings.setValue("crawl4ai/verify_ssl", self.verify_ssl_checkbox.isChecked())
+        # Save general settings
+        settings.setValue("default_dir", self.default_dir_input.text())
         
-        # Save application settings
-        settings.setValue("app/default_output_dir", self.default_output_dir_input.text())
+        # Save default formats
+        settings.setValue("default_json", self.default_json.isChecked())
+        settings.setValue("default_csv", self.default_csv.isChecked())
+        settings.setValue("default_txt", self.default_txt.isChecked())
+        settings.setValue("default_html", self.default_html.isChecked())
+        settings.setValue("default_md", self.default_md.isChecked())
         
-        default_formats = []
-        for fmt, checkbox in self.default_format_checkboxes.items():
-            if checkbox.isChecked():
-                default_formats.append(fmt)
+        # Save advanced settings
+        settings.setValue("concurrent_tasks", self.concurrent_input.currentText())
+        settings.setValue("timeout", self.timeout_input.currentText())
+        settings.setValue("user_agent", self.user_agent_input.text())
         
-        settings.setValue("app/default_formats", default_formats)
+        settings.sync()
         
-        # Show message
-        self.statusBar().showMessage("Settings saved")
-        
-        # Create crawl4ai config file
-        config = {
-            "user_agent": self.user_agent_input.text(),
-            "timeout": int(self.timeout_combo.currentText()),
-            "max_retries": int(self.retries_combo.currentText()),
-            "follow_redirects": self.follow_redirects_checkbox.isChecked(),
-            "verify_ssl": self.verify_ssl_checkbox.isChecked()
-        }
-        
-        config_dir = os.path.join(os.path.expanduser("~"), ".scrappy")
-        os.makedirs(config_dir, exist_ok=True)
-        
-        config_path = os.path.join(config_dir, "crawl4ai_config.json")
-        with open(config_path, 'w', encoding='utf-8') as f:
-            json.dump(config, f, indent=2)
+        QMessageBox.information(self, "Settings Saved", "Application settings have been saved.")
+        self.status_bar.showMessage("Settings saved")
     
     def load_settings(self):
-        """
-        Load settings.
-        """
-        # Create settings object
-        settings = QSettings("k3ss-official", "Scrappy")
+        """Load application settings."""
+        settings = QSettings("Scrappy", "ScrappyApp")
         
-        # Load crawl4ai settings
-        self.user_agent_input.setText(settings.value("crawl4ai/user_agent", "Scrappy/1.0 (+https://github.com/k3ss-official/scrappy_v2)"))
-        self.timeout_combo.setCurrentText(settings.value("crawl4ai/timeout", "30"))
-        self.retries_combo.setCurrentText(settings.value("crawl4ai/max_retries", "3"))
-        self.follow_redirects_checkbox.setChecked(settings.value("crawl4ai/follow_redirects", True, type=bool))
-        self.verify_ssl_checkbox.setChecked(settings.value("crawl4ai/verify_ssl", True, type=bool))
+        # Load general settings
+        default_dir = settings.value("default_dir", "")
+        if hasattr(self, 'default_dir_input'):
+            self.default_dir_input.setText(default_dir)
         
-        # Load application settings
-        default_output_dir = settings.value("app/default_output_dir", os.path.join(os.path.expanduser("~"), "scrappy_data"))
-        self.default_output_dir_input.setText(default_output_dir)
-        self.output_dir_input.setText(default_output_dir)
+        # Load default formats
+        if hasattr(self, 'default_json'):
+            self.default_json.setChecked(settings.value("default_json", True, type=bool))
+        if hasattr(self, 'default_csv'):
+            self.default_csv.setChecked(settings.value("default_csv", False, type=bool))
+        if hasattr(self, 'default_txt'):
+            self.default_txt.setChecked(settings.value("default_txt", False, type=bool))
+        if hasattr(self, 'default_html'):
+            self.default_html.setChecked(settings.value("default_html", False, type=bool))
+        if hasattr(self, 'default_md'):
+            self.default_md.setChecked(settings.value("default_md", False, type=bool))
         
-        default_formats = settings.value("app/default_formats", ["json"])
-        for fmt, checkbox in self.default_format_checkboxes.items():
-            checkbox.setChecked(fmt in default_formats)
+        # Load advanced settings
+        concurrent_tasks = settings.value("concurrent_tasks", "1")
+        if hasattr(self, 'concurrent_input'):
+            index = self.concurrent_input.findText(concurrent_tasks)
+            if index >= 0:
+                self.concurrent_input.setCurrentIndex(index)
         
-        for fmt, checkbox in self.format_checkboxes.items():
-            checkbox.setChecked(fmt in default_formats)
+        timeout = settings.value("timeout", "30")
+        if hasattr(self, 'timeout_input'):
+            index = self.timeout_input.findText(timeout)
+            if index >= 0:
+                self.timeout_input.setCurrentIndex(index)
+        
+        user_agent = settings.value("user_agent", "Scrappy/1.0 (+https://github.com/k3ss-official/scrappy_v2)")
+        if hasattr(self, 'user_agent_input'):
+            self.user_agent_input.setText(user_agent)
+    
+    def save_history(self):
+        """Save scraping history to file."""
+        if not hasattr(self, 'history_data'):
+            return
+        
+        try:
+            history_dir = os.path.join(os.path.expanduser("~"), ".scrappy")
+            os.makedirs(history_dir, exist_ok=True)
+            
+            history_file = os.path.join(history_dir, "history.json")
+            
+            with open(history_file, 'w') as f:
+                json.dump(self.history_data, f, indent=2)
+        
+        except Exception as e:
+            logger.error(f"Failed to save history: {str(e)}")
+    
+    def load_history(self):
+        """Load scraping history from file."""
+        try:
+            history_file = os.path.join(os.path.expanduser("~"), ".scrappy", "history.json")
+            
+            if os.path.exists(history_file):
+                with open(history_file, 'r') as f:
+                    self.history_data = json.load(f)
+                
+                # Update UI
+                self.update_history_table()
+                self.update_activity_list()
+                self.update_metrics()
+            else:
+                self.history_data = []
+        
+        except Exception as e:
+            logger.error(f"Failed to load history: {str(e)}")
+            self.history_data = []
+    
+    def save_templates(self):
+        """Save templates to file."""
+        if not hasattr(self, 'templates'):
+            return
+        
+        try:
+            templates_dir = os.path.join(os.path.expanduser("~"), ".scrappy")
+            os.makedirs(templates_dir, exist_ok=True)
+            
+            templates_file = os.path.join(templates_dir, "templates.json")
+            
+            with open(templates_file, 'w') as f:
+                json.dump(self.templates, f, indent=2)
+        
+        except Exception as e:
+            logger.error(f"Failed to save templates: {str(e)}")
+    
+    def load_templates(self):
+        """Load templates from file."""
+        try:
+            templates_file = os.path.join(os.path.expanduser("~"), ".scrappy", "templates.json")
+            
+            if os.path.exists(templates_file):
+                with open(templates_file, 'r') as f:
+                    self.templates = json.load(f)
+            else:
+                self.templates = []
+        
+        except Exception as e:
+            logger.error(f"Failed to load templates: {str(e)}")
+            self.templates = []
+    
+    def check_dependencies(self):
+        """Check if all required dependencies are installed."""
+        missing_deps = self.setup_manager.check_dependencies()
+        
+        if missing_deps:
+            reply = QMessageBox.question(
+                self, "Missing Dependencies",
+                f"The following dependencies are missing: {', '.join(missing_deps)}\n\nWould you like to install them now?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
+            )
+            
+            if reply == QMessageBox.Yes:
+                self.install_dependencies(missing_deps)
+    
+    def install_dependencies(self, dependencies):
+        """Install missing dependencies."""
+        # Show progress dialog
+        progress_dialog = QMessageBox(self)
+        progress_dialog.setWindowTitle("Installing Dependencies")
+        progress_dialog.setText("Installing dependencies, please wait...")
+        progress_dialog.setStandardButtons(QMessageBox.NoButton)
+        progress_dialog.show()
+        
+        # Install dependencies
+        try:
+            self.setup_manager.install_dependencies(dependencies)
+            progress_dialog.close()
+            QMessageBox.information(self, "Installation Complete", "Dependencies installed successfully.")
+        except Exception as e:
+            progress_dialog.close()
+            QMessageBox.critical(self, "Installation Failed", f"Failed to install dependencies: {str(e)}")
+    
+    def closeEvent(self, event):
+        """Handle window close event."""
+        # Minimize to tray instead of closing
+        if self.tray_icon.isVisible():
+            QMessageBox.information(self, "Scrappy", "Scrappy will continue running in the system tray.")
+            self.hide()
+            event.ignore()
+        else:
+            event.accept()
+
 
 def main():
-    """
-    Main function for running the desktop GUI.
-    """
-    import argparse
-    
-    parser = argparse.ArgumentParser(description='Scrappy Desktop GUI')
-    parser.add_argument('--output-dir', help='Base directory for storing data')
-    
-    args = parser.parse_args()
-    
-    # Create application
+    """Main entry point for the application."""
     app = QApplication(sys.argv)
-    app.setApplicationName("Scrappy")
-    app.setOrganizationName("k3ss-official")
+    app.setStyle('Fusion')  # Use Fusion style for better dark theme support
     
-    # Create main window
-    window = ScrappyGUI()
+    window = ScrappyDesktopApp()
     window.show()
     
-    # Run application
     sys.exit(app.exec_())
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
