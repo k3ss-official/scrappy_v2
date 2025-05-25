@@ -30,6 +30,9 @@ class Crawl4AIManager:
             import crawl4ai
             self.crawl4ai = crawl4ai
             
+            # Log version information
+            logger.info(f"Using crawl4ai version: {crawl4ai.__version__}")
+            
             # Load configuration if provided
             self.config = {}
             if config_path and os.path.exists(config_path):
@@ -40,7 +43,7 @@ class Crawl4AIManager:
             
             logger.info("Successfully initialized crawl4ai")
         except ImportError:
-            logger.error("Failed to import crawl4ai. Please install it using 'pip install crawl4ai==1.0.0'")
+            logger.error("Failed to import crawl4ai. Please install it using 'pip install crawl4ai'")
             raise
     
     def _load_config(self, config_path: str) -> Dict[str, Any]:
@@ -80,24 +83,49 @@ class Crawl4AIManager:
                 'verify_ssl': self.config.get('verify_ssl', True)
             }
             
-            # Initialize crawler with options
-            crawler = self.crawl4ai.Crawler(**crawler_options)
+            # Handle API changes between crawl4ai versions
+            try:
+                # For newer versions (0.6.x)
+                crawler = self.crawl4ai.Crawler(**crawler_options)
+            except TypeError:
+                # For older versions with different API
+                logger.info("Detected older crawl4ai version, adapting initialization parameters")
+                # Adjust parameters for older versions if needed
+                if 'follow_redirects' in crawler_options:
+                    crawler_options['allow_redirects'] = crawler_options.pop('follow_redirects')
+                crawler = self.crawl4ai.Crawler(**crawler_options)
             
             # Set additional options if available
             if 'headers' in self.config:
-                crawler.set_headers(self.config['headers'])
+                try:
+                    crawler.set_headers(self.config['headers'])
+                except AttributeError:
+                    # Handle older versions that might use a different method
+                    crawler.headers.update(self.config['headers'])
             
             if 'cookies' in self.config:
-                crawler.set_cookies(self.config['cookies'])
+                try:
+                    crawler.set_cookies(self.config['cookies'])
+                except AttributeError:
+                    # Handle older versions
+                    crawler.cookies.update(self.config['cookies'])
             
             if 'proxies' in self.config:
-                crawler.set_proxies(self.config['proxies'])
+                try:
+                    crawler.set_proxies(self.config['proxies'])
+                except AttributeError:
+                    # Handle older versions
+                    crawler.proxies = self.config['proxies']
             
             return crawler
         except Exception as e:
             logger.error(f"Error initializing crawl4ai crawler: {str(e)}")
-            # Fall back to default crawler
-            return self.crawl4ai.Crawler()
+            # Fall back to default crawler with minimal options
+            try:
+                return self.crawl4ai.Crawler()
+            except:
+                # Last resort fallback for any version
+                return self.crawl4ai.Crawler() if hasattr(self.crawl4ai, 'Crawler') else self.crawl4ai.create_crawler()
     
     def crawl(self, url: str, options: Optional[Dict[str, Any]] = None) -> Any:
         """
@@ -116,28 +144,72 @@ class Crawl4AIManager:
             # Apply per-request options if provided
             if options:
                 # Create a copy of the crawler with these options
-                temp_crawler = self.crawl4ai.Crawler(
-                    user_agent=options.get('user_agent', self.crawler.user_agent),
-                    timeout=options.get('timeout', self.crawler.timeout),
-                    max_retries=options.get('max_retries', self.crawler.max_retries),
-                    follow_redirects=options.get('follow_redirects', self.crawler.follow_redirects),
-                    verify_ssl=options.get('verify_ssl', self.crawler.verify_ssl)
-                )
+                try:
+                    # For newer versions
+                    temp_crawler = self.crawl4ai.Crawler(
+                        user_agent=options.get('user_agent', getattr(self.crawler, 'user_agent', None)),
+                        timeout=options.get('timeout', getattr(self.crawler, 'timeout', 30)),
+                        max_retries=options.get('max_retries', getattr(self.crawler, 'max_retries', 3)),
+                        follow_redirects=options.get('follow_redirects', getattr(self.crawler, 'follow_redirects', True)),
+                        verify_ssl=options.get('verify_ssl', getattr(self.crawler, 'verify_ssl', True))
+                    )
+                except TypeError:
+                    # For older versions
+                    crawler_options = {
+                        'user_agent': options.get('user_agent', getattr(self.crawler, 'user_agent', None)),
+                        'timeout': options.get('timeout', getattr(self.crawler, 'timeout', 30)),
+                        'max_retries': options.get('max_retries', getattr(self.crawler, 'max_retries', 3)),
+                    }
+                    if 'follow_redirects' in options:
+                        crawler_options['allow_redirects'] = options['follow_redirects']
+                    elif hasattr(self.crawler, 'allow_redirects'):
+                        crawler_options['allow_redirects'] = getattr(self.crawler, 'allow_redirects', True)
+                    
+                    if 'verify_ssl' in options:
+                        crawler_options['verify'] = options['verify_ssl']
+                    elif hasattr(self.crawler, 'verify'):
+                        crawler_options['verify'] = getattr(self.crawler, 'verify', True)
+                    
+                    temp_crawler = self.crawl4ai.Crawler(**crawler_options)
                 
                 # Set additional options if available
                 if 'headers' in options:
-                    temp_crawler.set_headers(options['headers'])
+                    try:
+                        temp_crawler.set_headers(options['headers'])
+                    except AttributeError:
+                        temp_crawler.headers.update(options['headers'])
                 
                 if 'cookies' in options:
-                    temp_crawler.set_cookies(options['cookies'])
+                    try:
+                        temp_crawler.set_cookies(options['cookies'])
+                    except AttributeError:
+                        temp_crawler.cookies.update(options['cookies'])
                 
                 if 'proxies' in options:
-                    temp_crawler.set_proxies(options['proxies'])
+                    try:
+                        temp_crawler.set_proxies(options['proxies'])
+                    except AttributeError:
+                        temp_crawler.proxies = options['proxies']
                 
-                result = temp_crawler.crawl(url)
+                # Handle different crawl method signatures
+                try:
+                    result = temp_crawler.crawl(url)
+                except TypeError:
+                    # Try alternative method signatures
+                    try:
+                        result = temp_crawler.crawl(url=url)
+                    except:
+                        result = temp_crawler.fetch(url)
             else:
                 # Use the default configured crawler
-                result = self.crawler.crawl(url)
+                try:
+                    result = self.crawler.crawl(url)
+                except TypeError:
+                    # Try alternative method signatures
+                    try:
+                        result = self.crawler.crawl(url=url)
+                    except:
+                        result = self.crawler.fetch(url)
             
             logger.info(f"Successfully crawled URL: {url}")
             return result

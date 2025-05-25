@@ -1,4 +1,4 @@
-crawl4ai==1.0.0
+crawl4ai==0.6.3
 flask==2.0.1
 requests==2.25.1
 pyyaml==6.0
