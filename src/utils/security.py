@@ -1,81 +1,48 @@
 """
 Security Module for Scrappy
 
-This module provides security utilities and middleware for the Scrappy application,
-ensuring secure data handling, input validation, and protection against common vulnerabilities.
+This module provides security utilities for the Scrappy application,
+including input sanitization, URL validation, and file path security.
 """
 
 import os
 import re
-import logging
-import hashlib
-import secrets
-import json
-from typing import Dict, List, Any, Optional
-from urllib.parse import urlparse
 import html
+import urllib.parse
+from typing import Optional, List, Dict, Any
 
-# Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger('scrappy.security')
 
 class SecurityManager:
     """
-    Security manager for the Scrappy application.
+    Security manager for Scrappy application.
+    
+    Provides utilities for input validation, sanitization, and security checks.
     """
     
     def __init__(self):
-        """
-        Initialize the security manager.
-        """
-        # Generate a random secret key for the session
-        self.secret_key = secrets.token_hex(32)
+        """Initialize the security manager."""
+        # Patterns for security checks
+        self.url_pattern = re.compile(
+            r'^(?:http|https)://'  # http:// or https://
+            r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?)|'  # domain
+            r'localhost|'  # localhost
+            r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'  # or ipv4
+            r'(?::\d+)?'  # optional port
+            r'(?:/?|[/?]\S+)$', re.IGNORECASE)
         
-        # Initialize security settings
-        self.max_request_size = 10 * 1024 * 1024  # 10 MB
-        self.allowed_domains = []  # Empty list means all domains are allowed
-        self.rate_limit = 10  # Requests per minute
+        # Allowed file extensions for output
+        self.allowed_extensions = ['json', 'csv', 'txt', 'yaml', 'yml', 'xml']
         
-        logger.info("Initialized security manager")
-    
-    def validate_url(self, url: str) -> bool:
-        """
-        Validate a URL for security concerns.
-        
-        Args:
-            url: URL to validate
-            
-        Returns:
-            True if URL is valid and safe, False otherwise
-        """
-        # Check if URL is properly formatted
-        try:
-            parsed_url = urlparse(url)
-            if not all([parsed_url.scheme, parsed_url.netloc]):
-                logger.warning(f"Invalid URL format: {url}")
-                return False
-            
-            # Ensure URL uses http or https
-            if parsed_url.scheme not in ['http', 'https']:
-                logger.warning(f"Unsupported URL scheme: {parsed_url.scheme}")
-                return False
-            
-            # Check against allowed domains if specified
-            if self.allowed_domains and parsed_url.netloc not in self.allowed_domains:
-                logger.warning(f"Domain not in allowed list: {parsed_url.netloc}")
-                return False
-            
-            return True
-        except Exception as e:
-            logger.error(f"Error validating URL {url}: {str(e)}")
-            return False
+        # Dangerous file paths to check
+        self.dangerous_paths = ['/etc/passwd', '/etc/shadow', '/proc', '/sys', '/dev', 
+                               '/boot', '/bin', '/sbin', '/usr/bin', '/usr/sbin']
     
     def sanitize_input(self, input_str: str) -> str:
         """
-        Sanitize input string to prevent injection attacks.
+        Sanitize user input to prevent XSS and injection attacks.
         
         Args:
-            input_str: Input string to sanitize
+            input_str: User input string
             
         Returns:
             Sanitized string
@@ -84,140 +51,119 @@ class SecurityManager:
             return ""
         
         # HTML escape to prevent XSS
-        sanitized = html.escape(input_str)
-        
-        # Remove potentially dangerous patterns
-        sanitized = re.sub(r'javascript:', '', sanitized, flags=re.IGNORECASE)
-        sanitized = re.sub(r'data:', '', sanitized, flags=re.IGNORECASE)
-        
-        return sanitized
+        return html.escape(input_str)
     
-    def validate_file_path(self, file_path: str) -> bool:
+    def validate_url(self, url: str) -> bool:
         """
-        Validate a file path for security concerns.
+        Validate URL format and scheme.
         
         Args:
-            file_path: File path to validate
+            url: URL to validate
             
         Returns:
-            True if file path is valid and safe, False otherwise
+            True if valid, False otherwise
         """
-        # Normalize path
-        normalized_path = os.path.normpath(file_path)
-        
-        # Check for path traversal attempts
-        if '..' in normalized_path:
-            logger.warning(f"Path traversal attempt detected: {file_path}")
+        if not url:
             return False
         
-        # Check for absolute paths
-        if os.path.isabs(normalized_path):
-            # Ensure path is within allowed directories
-            allowed_dirs = ['/tmp', '/var/tmp', os.getcwd()]
-            if not any(normalized_path.startswith(allowed_dir) for allowed_dir in allowed_dirs):
-                logger.warning(f"Path outside allowed directories: {file_path}")
-                return False
+        # Check URL format
+        if not self.url_pattern.match(url):
+            return False
+        
+        # Check scheme
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme not in ['http', 'https']:
+            return False
         
         return True
     
-    def hash_data(self, data: str) -> str:
-        """
-        Create a secure hash of data.
-        
-        Args:
-            data: Data to hash
-            
-        Returns:
-            Secure hash of data
-        """
-        return hashlib.sha256(data.encode()).hexdigest()
-    
     def secure_filename(self, filename: str) -> str:
         """
-        Secure a filename to prevent path traversal and other attacks.
+        Create a secure filename from user input.
         
         Args:
-            filename: Filename to secure
+            filename: Original filename
             
         Returns:
-            Secured filename
+            Secure filename
         """
-        # Remove any directory components
+        if not filename:
+            return "unnamed_file"
+        
+        # Remove path components
         filename = os.path.basename(filename)
         
-        # Remove potentially dangerous characters
-        filename = re.sub(r'[^\w\.\-]', '_', filename)
+        # Remove dangerous characters
+        filename = re.sub(r'[^\w\s.-]', '', filename)
         
-        # Ensure filename is not empty
+        # Replace spaces with underscores
+        filename = filename.replace(' ', '_')
+        
+        # Ensure it's not empty after sanitization
         if not filename:
-            filename = 'unnamed_file'
+            return "unnamed_file"
         
         return filename
     
     def validate_output_format(self, format_name: str) -> bool:
         """
-        Validate an output format name.
+        Validate output format.
         
         Args:
             format_name: Format name to validate
             
         Returns:
-            True if format is valid, False otherwise
+            True if valid, False otherwise
         """
-        allowed_formats = ['json', 'csv', 'txt', 'yaml', 'xml']
-        return format_name.lower() in allowed_formats
-    
-    def secure_headers(self) -> Dict[str, str]:
-        """
-        Generate secure HTTP headers for web responses.
+        if not format_name:
+            return False
         
-        Returns:
-            Dictionary of secure HTTP headers
-        """
-        return {
-            'Content-Security-Policy': "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' https://cdn.jsdelivr.net; img-src 'self' data:;",
-            'X-Content-Type-Options': 'nosniff',
-            'X-Frame-Options': 'SAMEORIGIN',
-            'X-XSS-Protection': '1; mode=block',
-            'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
-            'Referrer-Policy': 'strict-origin-when-cross-origin'
-        }
+        return format_name.lower() in self.allowed_extensions
     
-    def apply_rate_limiting(self, client_id: str, current_count: int) -> bool:
+    def validate_path(self, path: str) -> bool:
         """
-        Apply rate limiting to prevent abuse.
+        Validate file path for security.
         
         Args:
-            client_id: Identifier for the client
-            current_count: Current request count for the client
+            path: File path to validate
             
         Returns:
-            True if request is allowed, False if rate limit exceeded
+            True if safe, False otherwise
         """
-        return current_count <= self.rate_limit
+        if not path:
+            return False
+        
+        # Convert to absolute path
+        abs_path = os.path.abspath(path)
+        
+        # Check for dangerous paths
+        for dangerous in self.dangerous_paths:
+            if abs_path == dangerous or abs_path.startswith(dangerous + os.sep):
+                return False
+        
+        # Check for directory traversal attempts
+        if '..' in path:
+            return False
+        
+        return True
     
-    def validate_json_data(self, json_str: str) -> Optional[Dict[str, Any]]:
+    def sanitize_path(self, path: str) -> str:
         """
-        Validate and safely parse JSON data.
+        Sanitize file path for security.
         
         Args:
-            json_str: JSON string to validate
+            path: File path to sanitize
             
         Returns:
-            Parsed JSON data or None if invalid
+            Sanitized path
         """
-        try:
-            # Limit JSON size
-            if len(json_str) > self.max_request_size:
-                logger.warning(f"JSON data too large: {len(json_str)} bytes")
-                return None
-            
-            # Parse JSON
-            data = json.loads(json_str)
-            return data
-        except json.JSONDecodeError as e:
-            logger.error(f"Invalid JSON data: {str(e)}")
-            return None
-        except Exception as e:
-            logger.error(f"Error validating JSON data: {str(e)}")
-            return None
+        if not path:
+            return ""
+        
+        # Remove dangerous characters
+        path = re.sub(r'[<>:"|?*]', '', path)
+        
+        # Replace spaces with underscores
+        path = path.replace(' ', '_')
+        
+        return path
